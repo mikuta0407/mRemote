@@ -88,7 +88,7 @@ scene 復元には profile ID と「接続中だった」事実だけを保存�
 - `service` は app 固有固定値、`account` は推測可能な host 名ではなく credential UUID とする。
 - profile は UUID reference だけを保持する。
 - foreground 接続用途の既定 accessibility は `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` とする。
-- Mac で provisioning profile を持たない ad-hoc 署名のビルド（Homebrew で配るもの）はデータ保護 Keychain に書けない（errSecMissingEntitlement）。起動時に書き込みで判定し、その場合は login keychain に置く（`KeychainStore`、2026-10-16）。login keychain の item はアプリの署名で守られ、更新後は一度アクセス許可を求められることがある。accessibility 属性は login keychain では効かない。
+- Mac で provisioning profile を持たない ad-hoc 署名のビルド（Homebrew で配るもの）はデータ保護 Keychain に書けない（errSecMissingEntitlement）。起動時に書き込みで判定し、その場合は login keychain に置く（`KeychainStore`、2026-10-16）。Mac Catalyst の `SecItem*` は `kSecUseDataProtectionKeychain = false` を無視して常にデータ保護 Keychain を使うので、login keychain へはファイル Keychain の API（`SecKeychainAddGenericPassword` など。Catalyst の SDK では使えない扱いなので実行時に引く）で読み書きする（`LoginKeychain`、2026-10-17）。この API は一覧を取れないため、承認済みの証明書は endpoint の一覧を別の item に持つ。login keychain の item はアプリの署名で守られ、更新後は一度アクセス許可を求められることがある。accessibility 属性は login keychain では効かない。
 - optional の Face ID/Touch ID 保護を追加する場合は LocalAuthentication と access control を用い、接続 worker 上で認証 UI を開始しない。
 - 接続 challenge 用の password buffer は使用後に可能な範囲で zeroize し、`String` の長期保持や debug description を避ける。
 - profile 複製時に資格情報を共有するかは明示選択とし、既定では共有しない。

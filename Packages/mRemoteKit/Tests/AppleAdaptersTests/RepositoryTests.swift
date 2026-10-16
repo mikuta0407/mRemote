@@ -152,5 +152,7 @@ final class LoginKeychainTests: XCTestCase {
         }
         XCTAssertEqual(stored.leafSHA256, "aa")
         XCTAssertEqual(try repository.allRecords().count, 1)
+        try repository.remove(host: "desk.example", port: 3389)
+        XCTAssertEqual(try repository.allRecords().count, 0)
     }
 }

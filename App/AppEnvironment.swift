@@ -150,7 +150,9 @@ final class AppEnvironment {
             try await repository.upsert(profile)
             await refresh()
         } catch {
-            loadFailure = String(describing: error)
+            // The list itself is fine; replacing it with a load failure left
+            // nothing to do but restart the app.
+            listMessage = String(localized: "接続先を保存できませんでした（\(String(describing: error))）。")
             logger.error("saving a profile failed")
         }
     }
@@ -168,7 +170,7 @@ final class AppEnvironment {
             }
             await refresh()
         } catch {
-            loadFailure = String(describing: error)
+            listMessage = String(localized: "接続先を削除できませんでした（\(String(describing: error))）。")
             logger.error("deleting a profile failed")
         }
     }

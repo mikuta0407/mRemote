@@ -53,7 +53,14 @@ public struct KeychainCredentialRepository: CredentialRepository {
         return query
     }
 
+    private var login: LoginKeychain? {
+        store == .login ? LoginKeychain(service: service) : nil
+    }
+
     public func password(for reference: CredentialReference) throws -> String? {
+        if let login {
+            return try login.read(account: reference.rawValue.uuidString).flatMap { String(data: $0, encoding: .utf8) }
+        }
         var query = baseQuery(for: reference)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -71,6 +78,9 @@ public struct KeychainCredentialRepository: CredentialRepository {
     public func store(password: String, for reference: CredentialReference) throws {
         guard let data = password.data(using: .utf8) else {
             throw KeychainError(operation: "encode password", status: errSecParam)
+        }
+        if let login {
+            return try login.write(data, account: reference.rawValue.uuidString)
         }
         let query = baseQuery(for: reference)
         let attributes: [String: Any] = [
@@ -93,6 +103,9 @@ public struct KeychainCredentialRepository: CredentialRepository {
     }
 
     public func delete(_ reference: CredentialReference) throws {
+        if let login {
+            return try login.delete(account: reference.rawValue.uuidString)
+        }
         let status = SecItemDelete(baseQuery(for: reference) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError(operation: "SecItemDelete", status: status)

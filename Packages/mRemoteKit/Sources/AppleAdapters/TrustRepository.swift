@@ -123,7 +123,32 @@ public struct KeychainTrustRepository: TrustRepository {
         try record(account: "\(host):\(port)")
     }
 
+    private var login: LoginKeychain? {
+        store == .login ? LoginKeychain(service: service) : nil
+    }
+
+    /// The login keychain cannot be listed from Mac Catalyst, so it keeps the
+    /// endpoints that have a record in an item of their own.
+    private static let indexAccount = "endpoints"
+
+    private func loginIndex(_ login: LoginKeychain) throws -> [String] {
+        guard let data = try login.read(account: Self.indexAccount) else { return [] }
+        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    }
+
+    private func updateLoginIndex(_ login: LoginKeychain, _ change: (inout [String]) -> Void) throws {
+        let before = try loginIndex(login)
+        var after = before
+        change(&after)
+        guard after != before else { return }
+        if after.isEmpty { return try login.delete(account: Self.indexAccount) }
+        try login.write(try JSONEncoder().encode(after), account: Self.indexAccount)
+    }
+
     private func record(account: String) throws -> TrustRecord? {
+        if let login {
+            return try login.read(account: account).map { try Self.decoder.decode(TrustRecord.self, from: $0) }
+        }
         var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -145,6 +170,11 @@ public struct KeychainTrustRepository: TrustRepository {
 
     public func store(_ record: TrustRecord) throws {
         let data = try Self.encoder.encode(record)
+        if let login {
+            try login.write(data, account: record.endpointKey)
+            try updateLoginIndex(login) { if !$0.contains(record.endpointKey) { $0.append(record.endpointKey) } }
+            return
+        }
         let query = baseQuery(account: record.endpointKey)
         let attributes: [String: Any] = [
             kSecValueData as String: data,
@@ -165,15 +195,21 @@ public struct KeychainTrustRepository: TrustRepository {
     }
 
     public func remove(host: String, port: UInt16) throws {
+        if let login {
+            try login.delete(account: "\(host):\(port)")
+            try updateLoginIndex(login) { $0.removeAll { $0 == "\(host):\(port)" } }
+            return
+        }
         let status = SecItemDelete(baseQuery(account: "\(host):\(port)") as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError(operation: "SecItemDelete", status: status)
         }
     }
 
-    /// The accounts first, then each item: the login keychain refuses to
-    /// return the data of more than one item at a time (errSecParam).
     public func allRecords() throws -> [TrustRecord] {
+        if let login {
+            return try loginIndex(login).compactMap { try? record(account: $0) }
+        }
         var query = baseQuery(account: nil)
         query[kSecReturnAttributes as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitAll

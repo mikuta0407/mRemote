@@ -7,8 +7,9 @@ import Security
 /// application identifier, which only a provisioning profile grants; the
 /// ad-hoc signed Mac app that Homebrew installs has none, and every write
 /// there fails with errSecMissingEntitlement (-34018). That build keeps its
-/// items in the login keychain instead, which macOS guards with the app's
-/// code signature (an update may ask once to allow access again).
+/// items in the login keychain instead (`LoginKeychain`), which macOS guards
+/// with the app's code signature (an update may ask once to allow access
+/// again).
 public enum KeychainStore: Sendable, Hashable {
     case dataProtection
     case login
@@ -37,7 +38,11 @@ public enum KeychainStore: Sendable, Hashable {
         #endif
     }
 
+    /// `SecItem*` only ever reaches the data-protection keychain here; the
+    /// login keychain goes through `LoginKeychain`.
     func apply(to query: inout [String: Any]) {
-        query[kSecUseDataProtectionKeychain as String] = self == .dataProtection
+        #if os(macOS) || targetEnvironment(macCatalyst)
+        query[kSecUseDataProtectionKeychain as String] = true
+        #endif
     }
 }
