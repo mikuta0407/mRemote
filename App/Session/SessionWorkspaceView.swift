@@ -71,6 +71,14 @@ struct SessionWorkspaceView: View {
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
+            if Platform.isMac {
+                // The clipboard follows the user only while this window is
+                // the one in front.
+                WindowKeyReader { model.isWindowInFront = $0 }
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
             SoftwareKeyboardHost(controller: model.softwareKeyboard)
                 .frame(width: 1, height: 1)
                 .allowsHitTesting(false)
@@ -499,15 +507,17 @@ struct SessionWorkspaceView: View {
 
     private func floatingMenu(showsDeck: Bool, foldWantsDeck: Bool, keyboardButton: Bool = true) -> some View {
         let softwareKeyboardShown = model.softwareKeyboard.isVisible
-        return FloatingMenuButton(
-            keyboard: !keyboardButton ? nil : .init(
-                isShowingKeyboard: softwareKeyboardShown || showsDeck,
-                isEnabled: softwareKeyboardShown || showsDeck || keyboardButtonTarget == .laptopDeck
-                    || model.state.acceptsInput,
-                toggle: { toggleKeyboard(showsDeck: showsDeck, foldWantsDeck: foldWantsDeck) }
-            )
-        ) {
-            model.isMenuPresented = true
+        return Group {
+            if Platform.isMac {
+                // The Mac has the セッション menu in the menu bar instead of a
+                // button over the desktop; the sheet still comes up from it.
+                Color.clear
+                    .frame(width: 0, height: 0)
+                    .allowsHitTesting(false)
+            } else {
+                floatingMenuButton(softwareKeyboardShown: softwareKeyboardShown, showsDeck: showsDeck,
+                                   foldWantsDeck: foldWantsDeck, keyboardButton: keyboardButton)
+            }
         }
         // On the button rather than the workspace: the workspace already
         // carries the challenge sheet, and two sheets on one view do not both
@@ -516,6 +526,21 @@ struct SessionWorkspaceView: View {
             SessionMenuSheet(model: model)
                 .presentationDetents([.medium, .large])
                 .macSheetSize()
+        }
+    }
+
+    private func floatingMenuButton(
+        softwareKeyboardShown: Bool, showsDeck: Bool, foldWantsDeck: Bool, keyboardButton: Bool
+    ) -> some View {
+        FloatingMenuButton(
+            keyboard: !keyboardButton ? nil : .init(
+                isShowingKeyboard: softwareKeyboardShown || showsDeck,
+                isEnabled: softwareKeyboardShown || showsDeck || keyboardButtonTarget == .laptopDeck
+                    || model.state.acceptsInput,
+                toggle: { toggleKeyboard(showsDeck: showsDeck, foldWantsDeck: foldWantsDeck) }
+            )
+        ) {
+            model.isMenuPresented = true
         }
     }
 

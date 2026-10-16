@@ -1,4 +1,6 @@
 import SwiftUI
+import InputCore
+import SessionCore
 
 @main
 struct mRemoteApp: App {
@@ -99,6 +101,9 @@ struct MacCommands: Commands {
                 Button("接続先の一覧") { showList(nil) }
                     .keyboardShortcut("0", modifiers: .command)
             }
+            CommandMenu("セッション") {
+                SessionCommands(session: environment.runningSessions.first { $0.id == environment.focusedSessionID })
+            }
         }
     }
 
@@ -109,5 +114,58 @@ struct MacCommands: Commands {
             openWindow(id: "main")
         }
         environment.listRequest = request
+    }
+}
+
+/// The Mac's セッション menu: what the iPad's floating button holds, for the
+/// session whose window is in front. Without a session in front it is all
+/// disabled.
+private struct SessionCommands: View {
+    let session: SessionWorkspaceModel?
+    @AppStorage(KeyShortcutList.storageKey) private var shortcuts = KeyShortcutList.standard
+
+    var body: some View {
+        Button("セッションのメニュー…") { session?.isMenuPresented = true }
+            .disabled(session == nil)
+        Divider()
+        Menu("ショートカットを送る") {
+            ForEach(shortcuts.shortcuts) { shortcut in
+                Button(shortcut.displayTitle) {
+                    guard let session else { return }
+                    Task { await session.sendFromMenu(shortcut) }
+                }
+            }
+        }
+        .disabled(session?.state.acceptsInput != true)
+        Picker("解像度", selection: Binding(
+            get: { session?.runtime.resolution ?? .adaptive },
+            set: { session?.setResolution($0) }
+        )) {
+            ForEach([ResolutionPolicy.adaptive] + ResolutionPolicy.presets, id: \.self) { policy in
+                Text(Formatting.resolutionLabel(policy)).tag(policy)
+            }
+        }
+        .disabled(session?.supportsDynamicResolution != true)
+        if let session, let mac = session.macExtensions, mac.features.contains(.streamConfig) {
+            Picker("画質", selection: Binding(
+                get: { mac.quality },
+                set: { quality in Task { await session.setStreamQuality(quality) } }
+            )) {
+                ForEach(StreamQuality.allCases, id: \.self) { quality in
+                    Text(StreamQualityLabel.text(quality)).tag(quality)
+                }
+            }
+        }
+        Divider()
+        Button("再接続") {
+            guard let session else { return }
+            Task { await session.reconnect() }
+        }
+        .disabled(session.map { !($0.canRetry || $0.state == .disconnected) } ?? true)
+        Button("切断") {
+            guard let session else { return }
+            Task { await session.disconnect() }
+        }
+        .disabled(session == nil)
     }
 }

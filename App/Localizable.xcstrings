@@ -4002,6 +4002,56 @@
           }
         }
       }
+    },
+    "接続先を保存できませんでした（%@）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection couldn't be saved (%@)."
+          }
+        }
+      }
+    },
+    "接続先を削除できませんでした（%@）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection couldn't be deleted (%@)."
+          }
+        }
+      }
+    },
+    "セッションのメニュー…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Session Menu…"
+          }
+        }
+      }
+    },
+    "ショートカットを送る": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send Shortcut"
+          }
+        }
+      }
+    },
+    "画質": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quality"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
