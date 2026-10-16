@@ -61,6 +61,22 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
     @ObservationIgnored private var clipboardMirror = ClipboardMirror()
     @ObservationIgnored private var clipboardWatch: Task<Void, Never>?
     @ObservationIgnored private var isMirroringClipboard = false
+    /// The Mac only: this session's window is the key window of the app in
+    /// front (`WindowKeyReader`). The clipboard follows the user only then: a
+    /// copy made in another app must not be overwritten by whatever the
+    /// remote announces meanwhile, and the remote is not sent what the user
+    /// copies elsewhere.
+    @ObservationIgnored var isWindowInFront = true {
+        didSet {
+            guard isWindowInFront != oldValue else { return }
+            clipboardLog.info("window in front: \(self.isWindowInFront, privacy: .public)")
+            guard isWindowInFront else { return }
+            Task { await catchUpClipboard() }
+        }
+    }
+    /// The remote copied something while the window was behind; it comes to
+    /// the Mac on the way back, unless the Mac copied something newer.
+    @ObservationIgnored private var remoteClipboardChangedBehind = false
     /// Built once in `init`; never replaced, so observation is not needed on
     /// the property itself - the controller is observable on its own.
     @ObservationIgnored private(set) var softwareKeyboard: SoftwareKeyboardController!
@@ -424,9 +440,9 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
     // MARK: Mac: a clipboard that follows the user
 
     /// Looks at the pasteboard's change count twice a second while this
-    /// session has the keyboard, and offers Windows whatever is new. Reading
-    /// the count reads nothing of the content; the content is read only when
-    /// the count has moved. Copies made in another app while this window was
+    /// session has the keyboard and its window is in front, and offers
+    /// Windows whatever is new. Reading the count reads nothing of the
+    /// content; the content is read only when the count has moved. Copies made in another app while this window was
     /// behind are picked up the moment it comes back to the front.
     private func watchMacPasteboard() {
         clipboardWatch?.cancel()
@@ -438,8 +454,20 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
         }
     }
 
+    /// Back in front: what the Mac copied meanwhile goes to the remote; if
+    /// it copied nothing, what the remote copied meanwhile comes here.
+    private func catchUpClipboard() async {
+        guard Platform.isMac, clipboardPolicy != .disabled else { return }
+        let localChanged = clipboardMirror.handledChangeCount != UIPasteboard.general.changeCount
+        await mirrorLocalClipboard()
+        if remoteClipboardChangedBehind {
+            remoteClipboardChangedBehind = false
+            if !localChanged { await mirrorRemoteClipboard() }
+        }
+    }
+
     private func mirrorLocalClipboard() async {
-        guard clipboardPolicy.allowsSend, state == .connected, isFocused, !isMirroringClipboard,
+        guard clipboardPolicy.allowsSend, state == .connected, isFocused, isWindowInFront, !isMirroringClipboard,
               !isTransferringClipboard, let clipboard = session as? any ClipboardCapableSession
         else { return }
         let pasteboard = UIPasteboard.general
@@ -470,19 +498,24 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
         guard clipboardPolicy.allowsReceive, state == .connected, !isMirroringClipboard,
               let clipboard = session as? any ClipboardCapableSession
         else { return }
+        guard isWindowInFront else {
+            remoteClipboardChangedBehind = true
+            return
+        }
         isMirroringClipboard = true
         defer { isMirroringClipboard = false }
         do {
             if remoteHasText {
                 let text = try await clipboard.fetchRemoteClipboardText()
                 lastReceivedText = text
+                guard isLocalClipboardUnchanged() else { return }
                 guard clipboardMirror.shouldWrite(text) else { return }
                 UIPasteboard.general.string = text
                 clipboardLog.info("mirrored remote text: \(text.utf16.count, privacy: .public) units")
             } else if remoteHasImage {
-                guard let image = ClipboardMedia.image(from: try await clipboard.fetchRemoteClipboardImage()) else {
-                    return
-                }
+                guard let image = ClipboardMedia.image(from: try await clipboard.fetchRemoteClipboardImage()),
+                      isLocalClipboardUnchanged()
+                else { return }
                 clipboardMirror.forgetText()
                 UIPasteboard.general.image = image
                 clipboardLog.info("mirrored remote image")
@@ -493,6 +526,17 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
         } catch {
             clipboardLog.error("mirroring remote clipboard failed: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    /// The Mac copied nothing the mirror has not dealt with, so writing the
+    /// remote's copy loses nothing. A copy made while the remote's was on its
+    /// way is newer, and stays.
+    private func isLocalClipboardUnchanged() -> Bool {
+        guard clipboardMirror.handledChangeCount == UIPasteboard.general.changeCount else {
+            clipboardLog.info("remote clipboard not mirrored: the Mac copied something newer")
+            return false
+        }
+        return true
     }
 
     var canSendClipboard: Bool {

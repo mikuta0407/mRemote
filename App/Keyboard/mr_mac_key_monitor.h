@@ -40,6 +40,11 @@ id _Nullable mr_mac_scroll_monitor_install(MRMacScrollHandler handler);
 /// NSEvent.modifierFlags: the modifiers held right now. Zero off the Mac.
 uint64_t mr_mac_current_modifier_flags(void);
 
+/// NSApplication.isActive: this app is the one in front. A Catalyst scene
+/// stays active, and UIKit posts nothing, when another app comes to the
+/// front. Always true off the Mac.
+bool mr_mac_app_is_active(void);
+
 /// Removes a monitor from any install function.
 void mr_mac_key_monitor_remove(id monitor);
 

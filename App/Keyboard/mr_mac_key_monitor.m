@@ -9,6 +9,14 @@
 + (NSUInteger)modifierFlags;
 @end
 
+@protocol MRNSApplicationClass
++ (id)sharedApplication;
+@end
+
+@protocol MRNSApplication
+- (BOOL)isActive;
+@end
+
 @protocol MRNSEvent
 - (NSUInteger)type;
 - (unsigned short)keyCode;
@@ -102,6 +110,18 @@ uint64_t mr_mac_current_modifier_flags(void) {
     return eventClass ? (uint64_t)[(Class<MRNSEventClass>)eventClass modifierFlags] : 0;
 #else
     return 0;
+#endif
+}
+
+bool mr_mac_app_is_active(void) {
+#if TARGET_OS_MACCATALYST
+    Class applicationClass = NSClassFromString(@"NSApplication");
+    if (applicationClass == Nil) {
+        return true;
+    }
+    return [(id<MRNSApplication>)[(Class<MRNSApplicationClass>)applicationClass sharedApplication] isActive];
+#else
+    return true;
 #endif
 }
 
