@@ -7,6 +7,7 @@ enum SSHNativeEvent: Sendable {
     case hostKey(challengeID: UInt64, keyType: String, blob: Data)
     case signIn(challengeID: UInt64, offered: UInt32, attempt: UInt32, rejected: UInt32)
     case keyboardInteractive(challengeID: UInt64, name: String, instruction: String, prompts: [KeyboardInteractivePrompt])
+    case forward(index: Int, error: Int32)
     /// The run thread has returned and the handle is destroyed. Always last.
     case finished
 }
@@ -74,6 +75,7 @@ struct SSHNativeConnection: Sendable {
     let terminalType: String
     let size: TerminalSize
     let keepAliveSeconds: Int
+    var forwards: [SSHPortForward] = []
 }
 
 /// Owns the C session: creates it, runs it on a thread of its own, and turns
@@ -117,6 +119,13 @@ final class SSHNativeSession: @unchecked Sendable {
                 continuation.finish()
             }
             var session: OpaquePointer?
+            // The forwards' host names as C strings for the duration of
+            // create, which copies them.
+            let hosts = connection.forwards.map { strdup($0.remoteHost) }
+            defer { hosts.forEach { free($0) } }
+            var forwards = zip(connection.forwards, hosts).map { forward, host in
+                mr_ssh_forward(local_port: forward.localPort, remote_host: UnsafePointer(host), remote_port: forward.remotePort)
+            }
             let status = connection.host.withCString { host in
                 connection.username.withCString { user in
                     connection.terminalType.withCString { term in
@@ -136,9 +145,14 @@ final class SSHNativeSession: @unchecked Sendable {
                             on_host_key: sshOnHostKey,
                             on_auth_request: sshOnAuthRequest,
                             on_keyboard_interactive: sshOnKeyboardInteractive,
-                            on_output: sshOnOutput
+                            on_output: sshOnOutput,
+                            on_forward: sshOnForward
                         )
-                        return mr_ssh_session_create(&config, &callbacks, context.toOpaque(), &session)
+                        return forwards.withUnsafeMutableBufferPointer { buffer in
+                            config.forwards = UnsafePointer(buffer.baseAddress)
+                            config.forward_count = buffer.count
+                            return mr_ssh_session_create(&config, &callbacks, context.toOpaque(), &session)
+                        }
                     }
                 }
             }
@@ -274,6 +288,10 @@ private func sshOnKeyboardInteractive(_ context: UnsafeMutableRawPointer?, _ cha
         name: text(request.name, request.name_length),
         instruction: text(request.instruction, request.instruction_length),
         prompts: prompts))
+}
+
+private func sshOnForward(_ context: UnsafeMutableRawPointer?, _ index: Int, _ error: Int32) {
+    native(context).continuation.yield(.forward(index: index, error: error))
 }
 
 private func sshOnOutput(_ context: UnsafeMutableRawPointer?, _ bytes: UnsafePointer<UInt8>?, _ length: Int) -> Int {

@@ -42,7 +42,7 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 UsePAM no
 StrictModes no
-LogLevel ERROR
+LogLevel ${MR_SSHD_LOGLEVEL:-ERROR}
 CONFIG
 
 "$SSHD" -D -e -f "$work/sshd_config" 2>"$work/sshd.log" &
@@ -56,4 +56,4 @@ nc -z 127.0.0.1 "$port" || { cat "$work/sshd.log" >&2; exit 1; }
 MR_SSH_TEST_PORT="$port" \
 MR_SSH_TEST_USER="$(id -un)" \
 MR_SSH_TEST_DIR="$work" \
-"$TESTS"
+"$TESTS" || { status=$?; echo "--- sshd log" >&2; tail -40 "$work/sshd.log" >&2; exit $status; }

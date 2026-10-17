@@ -30,7 +30,8 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
         keys: InMemorySSHKeyRepository,
         knownHosts: InMemoryKnownHostRepository,
         keyID: SSHKeyID?,
-        startupCommand: String? = nil
+        startupCommand: String? = nil,
+        forwards: [SSHPortForward]? = nil
     ) -> SSHRemoteSession {
         let profile = ConnectionProfile(
             displayName: "live",
@@ -38,7 +39,8 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
             account: RemoteAccount(username: user),
             configuration: .ssh(SSHConfiguration(
                 authentication: SSHAuthentication(keyID: keyID, allowsKeyboardInteractive: false, allowsPassword: false),
-                startupCommand: startupCommand)))
+                startupCommand: startupCommand,
+                portForwards: forwards)))
         let configuration = EffectiveProfileResolver().resolve(profile: profile, globalSettings: .default)
         return SSHRemoteSession(
             configuration: configuration, credentials: InMemoryCredentialRepository(),
@@ -136,6 +138,42 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
         try await wait(for: .disconnected, in: third, hostKeyAnswer: .cancel, seen: { disposition = $0.disposition })
         XCTAssertEqual(disposition, .changed(previousKeyType: "ssh-rsa", previousFingerprint: "SHA256:old"))
         XCTAssertEqual(try knownHosts.allHosts().first?.fingerprint, "SHA256:old", "a refused key replaced the trusted one")
+    }
+
+    /// A forward to the sshd itself: what comes back through it is the SSH
+    /// banner, so the bytes went device -> tunnel -> server -> target.
+    func testALocalForwardReachesTheTargetThroughTheServer() async throws {
+        let keys = InMemorySSHKeyRepository()
+        let localPort = UInt16.random(in: 40000...50000)
+        let session = makeSession(
+            keys: keys, knownHosts: InMemoryKnownHostRepository(), keyID: try storeKey(in: keys),
+            forwards: [SSHPortForward(localPort: localPort, remoteHost: "127.0.0.1", remotePort: port)])
+        try await session.connect()
+        try await wait(for: .connected, in: session)
+        try await Task.sleep(for: .milliseconds(300))
+
+        let banner = try await Task.detached { () throws -> String in
+            let fd = socket(AF_INET, SOCK_STREAM, 0)
+            defer { close(fd) }
+            var address = sockaddr_in()
+            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            address.sin_family = sa_family_t(AF_INET)
+            address.sin_port = localPort.bigEndian
+            address.sin_addr.s_addr = inet_addr("127.0.0.1")
+            var timeout = timeval(tv_sec: 10, tv_usec: 0)
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            let connected = withUnsafePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+            guard connected == 0 else { throw POSIXError(.ECONNREFUSED) }
+            var buffer = [UInt8](repeating: 0, count: 256)
+            let n = read(fd, &buffer, buffer.count)
+            return String(decoding: buffer.prefix(max(0, n)), as: UTF8.self)
+        }.value
+        XCTAssertTrue(banner.hasPrefix("SSH-2.0-"), banner)
+        await session.disconnect(reason: .userRequested)
     }
 
     func testWithoutAnAcceptedKeySignInFails() async throws {

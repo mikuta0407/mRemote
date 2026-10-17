@@ -392,6 +392,10 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
             if Platform.isMac { await mirrorRemoteClipboard() }
         case .macExtensions(let status):
             macExtensions = status
+        case let .portForwardFailed(localPort, error):
+            clipboardMessage = error == EADDRINUSE
+                ? String(localized: "ポート転送 localhost:\(localPort) は使用中のため開けませんでした。")
+                : String(localized: "ポート転送 localhost:\(localPort) を開けませんでした（\(error)）。")
         case .microphone(let format):
             microphoneFormat = format
             if let format, let capable = session as? any MicrophoneCapableSession {

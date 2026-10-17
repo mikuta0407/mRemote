@@ -258,7 +258,8 @@ actor SSHRemoteSession: TerminalSession {
             username: username,
             terminalType: settings.terminalType,
             size: size,
-            keepAliveSeconds: settings.keepAliveSeconds
+            keepAliveSeconds: settings.keepAliveSeconds,
+            forwards: Array(settings.portForwards.prefix(Int(MR_SSH_MAX_FORWARDS)))
         ))
     }
 
@@ -322,6 +323,11 @@ actor SSHRemoteSession: TerminalSession {
             raise(.keyboardInteractive(KeyboardInteractiveChallenge(
                 generation: machine.generation, host: configuration.endpoint.host,
                 name: name, instruction: instruction, prompts: prompts)))
+
+        case let .forward(index, error):
+            guard error != 0, index < settings.portForwards.count else { return }
+            sshLog.error("port forward \(index, privacy: .public) could not listen: \(error, privacy: .public)")
+            emit(.portForwardFailed(localPort: settings.portForwards[index].localPort, error: error))
 
         case .finished:
             finishAttempt()

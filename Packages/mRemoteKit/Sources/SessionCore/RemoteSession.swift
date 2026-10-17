@@ -19,6 +19,9 @@ public enum SessionControlEvent: Sendable {
     /// A Mac server took up the Mac extensions, or what it reports about
     /// them changed (stream rate, input source).
     case macExtensions(MacExtensionStatus)
+    /// SSH: a local port forward could not listen. `error` is the errno
+    /// (EADDRINUSE: the port is taken). The session itself carries on.
+    case portForwardFailed(localPort: UInt16, error: Int32)
 }
 
 public enum TransportSecurity: Hashable, Sendable {

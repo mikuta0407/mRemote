@@ -30,7 +30,7 @@ target_include_directories(mremote_libssh2
 target_compile_definitions(mremote_libssh2 PRIVATE ${MR_LIBSSH2_DEFINITIONS})
 target_link_libraries(mremote_libssh2 PUBLIC OpenSSL::Crypto)
 
-add_library(mremote_ssh_bridge STATIC src/ssh_bridge.c)
+add_library(mremote_ssh_bridge STATIC src/ssh_bridge.c src/ssh_forward.c)
 target_compile_features(mremote_ssh_bridge PUBLIC c_std_11)
 target_include_directories(mremote_ssh_bridge PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(mremote_ssh_bridge PUBLIC mremote_libssh2 Threads::Threads)

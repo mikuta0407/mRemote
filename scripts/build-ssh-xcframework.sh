@@ -145,12 +145,14 @@ build_slice() {
       -w -c "$SOURCE_DIR/src/$source.c" -o "$object"
     objects+=("$object")
   done
-  object="$slice_root/ssh_bridge.o"
-  xcrun --sdk "$sdk" clang "${common[@]}" \
-    -Wall -Wextra -Wpedantic -Werror \
-    -I "$REPO_ROOT/bridge/ssh/include" -I "$SOURCE_DIR/include" \
-    -c "$REPO_ROOT/bridge/ssh/src/ssh_bridge.c" -o "$object"
-  objects+=("$object")
+  for source in ssh_bridge ssh_forward; do
+    object="$slice_root/$source.o"
+    xcrun --sdk "$sdk" clang "${common[@]}" \
+      -Wall -Wextra -Wpedantic -Werror \
+      -I "$REPO_ROOT/bridge/ssh/include" -I "$SOURCE_DIR/include" \
+      -c "$REPO_ROOT/bridge/ssh/src/$source.c" -o "$object"
+    objects+=("$object")
+  done
 
   /usr/bin/libtool -static -D -o "$slice_root/libmRemoteSSH.a" "${objects[@]}"
   [[ "$(xcrun lipo -archs "$slice_root/libmRemoteSSH.a")" == "arm64" ]] ||

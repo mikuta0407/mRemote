@@ -2,6 +2,7 @@
 #define _DARWIN_C_SOURCE 1
 
 #include "mremote/ssh_bridge.h"
+#include "ssh_forward.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -75,6 +76,8 @@ struct mr_ssh_session {
     uint16_t port;
     char *username;
     char *term;
+    mr_ssh_forward *forwards;
+    size_t forward_count;
     uint32_t keepalive_seconds;
     uint32_t connect_timeout_ms;
     mr_ssh_callbacks callbacks;
@@ -477,6 +480,17 @@ mr_ssh_status mr_ssh_session_create(
         !callbacks->on_output) {
         return MR_SSH_ERROR_INVALID_ARGUMENT;
     }
+    if (config->forward_count > MR_SSH_MAX_FORWARDS || (config->forward_count && !config->forwards)) {
+        return MR_SSH_ERROR_INVALID_ARGUMENT;
+    }
+    for (size_t i = 0; i < config->forward_count; i++) {
+        const mr_ssh_forward *f = &config->forwards[i];
+        if (f->local_port == 0 || f->remote_port == 0 || !f->remote_host ||
+            strnlen(f->remote_host, MR_SSH_MAX_HOST_BYTES + 1) == 0 ||
+            strnlen(f->remote_host, MR_SSH_MAX_HOST_BYTES + 1) > MR_SSH_MAX_HOST_BYTES) {
+            return MR_SSH_ERROR_INVALID_ARGUMENT;
+        }
+    }
     if (config->port == 0 ||
         config->columns < MR_SSH_MIN_TERMINAL_DIMENSION || config->rows < MR_SSH_MIN_TERMINAL_DIMENSION ||
         config->columns > MR_SSH_MAX_TERMINAL_DIMENSION || config->rows > MR_SSH_MAX_TERMINAL_DIMENSION) {
@@ -509,6 +523,21 @@ mr_ssh_status mr_ssh_session_create(
                                                        : MR_SSH_DEFAULT_CONNECT_TIMEOUT_MS;
     s->callbacks = *callbacks;
     s->context = context;
+    if (config->forward_count) {
+        s->forwards = calloc(config->forward_count, sizeof *s->forwards);
+        if (!s->forwards) {
+            free(s->host);
+            free(s->username);
+            free(s->term);
+            free(s);
+            return MR_SSH_ERROR_OUT_OF_MEMORY;
+        }
+        for (size_t i = 0; i < config->forward_count; i++) {
+            s->forwards[i] = config->forwards[i];
+            s->forwards[i].remote_host = copy_string(config->forwards[i].remote_host, MR_SSH_MAX_HOST_BYTES);
+        }
+        s->forward_count = config->forward_count;
+    }
 
     if (pipe(s->wake_pipe) != 0 || set_nonblocking(s->wake_pipe[0]) != 0 ||
         set_nonblocking(s->wake_pipe[1]) != 0) {
@@ -548,6 +577,8 @@ mr_ssh_status mr_ssh_session_destroy(mr_ssh_session *s) {
     close(s->wake_pipe[1]);
     pthread_mutex_destroy(&s->lock);
     pthread_cond_destroy(&s->cond);
+    for (size_t i = 0; i < s->forward_count; i++) free((char *)s->forwards[i].remote_host);
+    free(s->forwards);
     free(s->host);
     free(s->username);
     free(s->term);
@@ -560,8 +591,15 @@ mr_ssh_status mr_ssh_session_destroy(mr_ssh_session *s) {
 /* Waits until the socket is ready in the directions libssh2 is blocked on
  * (plus extra_events), or the wake pipe fires, or timeout_ms passes (-1
  * waits for ever). Returns -1 when a stop is requested. */
+static int wait_io(mr_ssh_session *s, short extra_events, int timeout_ms, mr_forwarder *forwarder);
+
 static int wait_socket(mr_ssh_session *s, short extra_events, int timeout_ms) {
-    struct pollfd fds[2];
+    return wait_io(s, extra_events, timeout_ms, NULL);
+}
+
+/* wait_socket, plus a forwarder's listeners and tunnels. */
+static int wait_io(mr_ssh_session *s, short extra_events, int timeout_ms, mr_forwarder *forwarder) {
+    struct pollfd fds[2 + MR_SSH_MAX_FORWARDS + MR_SSH_MAX_TUNNELS];
     short events = extra_events;
     if (s->ssh) {
         int directions = libssh2_session_block_directions(s->ssh);
@@ -574,7 +612,8 @@ static int wait_socket(mr_ssh_session *s, short extra_events, int timeout_ms) {
     fds[1].fd = s->wake_pipe[0];
     fds[1].events = POLLIN;
     fds[1].revents = 0;
-    int rc = poll(fds, 2, timeout_ms);
+    nfds_t count = 2 + (nfds_t)mr_forwarder_fill_pollfds(forwarder, fds + 2);
+    int rc = poll(fds, count, timeout_ms);
     if (rc > 0 && (fds[1].revents & POLLIN)) drain_wake_pipe(s);
     if (stop_requested(s)) return -1;
     return rc;
@@ -955,6 +994,11 @@ static int open_shell(mr_ssh_session *s, mr_ssh_failure *failure, int32_t *detai
     return 0;
 }
 
+static void report_forward(void *context, size_t index, int32_t error) {
+    mr_ssh_session *s = context;
+    if (s->callbacks.on_forward) s->callbacks.on_forward(s->context, index, error);
+}
+
 /* Hands held output to the caller. Returns 1 when all of it was taken. */
 static int deliver_held(mr_ssh_session *s) {
     while (s->held_offset < s->held_length) {
@@ -979,6 +1023,9 @@ static void run_shell(mr_ssh_session *s) {
         return;
     }
     if (s->keepalive_seconds) libssh2_keepalive_config(s->ssh, 1, s->keepalive_seconds);
+    mr_forwarder *forwarder = s->forward_count
+        ? mr_forwarder_create(s->ssh, s->forwards, s->forward_count, report_forward, s)
+        : NULL;
 
     int paused = 0;
     for (;;) {
@@ -1053,6 +1100,14 @@ static void run_shell(mr_ssh_session *s) {
         }
         if (fatal) break;
 
+        /* Forwards. Their reads can pull the shell's packets in too, so any
+         * progress loops round before polling again. */
+        int forwarded = mr_forwarder_step(forwarder);
+        if (forwarded < 0) {
+            report_state(s, MR_SSH_STATE_FAILED, failure_for_libssh2(forwarded), forwarded);
+            break;
+        }
+
         if (!paused && libssh2_channel_eof(s->channel)) {
             int exit_status = -1;
             int rc;
@@ -1079,13 +1134,14 @@ static void run_shell(mr_ssh_session *s) {
         pthread_mutex_lock(&s->lock);
         int more = (s->resize_pending && !resize_blocked) || (s->input_length && !want_write) || (paused && s->resume_requested);
         pthread_mutex_unlock(&s->lock);
-        if (more) continue;
+        if (more || forwarded > 0) continue;
 
         short extra = paused ? 0 : POLLIN;
         if (want_write) extra |= POLLOUT;
         if (resize_blocked) extra |= POLLOUT;
-        if (wait_socket(s, extra, timeout_ms) < 0) continue;  /* the loop reports the stop */
+        if (wait_io(s, extra, timeout_ms, forwarder) < 0) continue;  /* the loop reports the stop */
     }
+    mr_forwarder_destroy(forwarder);
     wipe_free(buffer, READ_CHUNK);
     wipe_free(s->held_output, READ_CHUNK);
     s->held_output = NULL;

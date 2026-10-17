@@ -29,7 +29,8 @@
 extern "C" {
 #endif
 
-#define MR_SSH_BRIDGE_ABI_VERSION 1u
+/* ABI 2: local port forwards. */
+#define MR_SSH_BRIDGE_ABI_VERSION 2u
 #define MR_SSH_DEFAULT_PORT 22u
 #define MR_SSH_MAX_HOST_BYTES 1024u
 #define MR_SSH_MAX_USERNAME_BYTES 1024u
@@ -47,6 +48,10 @@ extern "C" {
 /* How long a challenge may wait for the user. The server's own login grace
  * time is usually shorter. */
 #define MR_SSH_CHALLENGE_TIMEOUT_MS (5u * 60u * 1000u)
+/* ABI 2. */
+#define MR_SSH_MAX_FORWARDS 16u
+/* Connections through all forwards at once; more wait in the listen queue. */
+#define MR_SSH_MAX_TUNNELS 64u
 
 typedef struct mr_ssh_session mr_ssh_session;
 typedef int32_t mr_ssh_status;
@@ -105,6 +110,14 @@ enum {
     MR_SSH_AUTH_PASSWORD = 1u << 2
 };
 
+/* ABI 2: `ssh -L local_port:remote_host:remote_port`. The listener is on
+ * 127.0.0.1 only, and exists while the shell is open. */
+typedef struct {
+    uint16_t local_port;
+    const char *remote_host;
+    uint16_t remote_port;
+} mr_ssh_forward;
+
 typedef struct {
     uint32_t struct_size;
     /* Copied during create. host is a name or an IP literal, without
@@ -122,6 +135,9 @@ typedef struct {
     uint32_t keepalive_seconds;
     /* 0 means MR_SSH_DEFAULT_CONNECT_TIMEOUT_MS. */
     uint32_t connect_timeout_ms;
+    /* ABI 2. Copied during create; NULL/0 for none. */
+    const mr_ssh_forward *forwards;
+    size_t forward_count;
 } mr_ssh_config;
 
 typedef uint32_t mr_ssh_host_key_type;
@@ -199,6 +215,9 @@ typedef struct {
      * were taken. Fewer than length pauses reading - the server stops once
      * its window fills - until mr_ssh_session_resume_output. */
     size_t (*on_output)(void *context, const uint8_t *bytes, size_t length);
+    /* ABI 2, optional. Once per forward when the shell opens: error is 0
+     * when it listens, else the errno (EADDRINUSE: the port is taken). */
+    void (*on_forward)(void *context, size_t index, int32_t error);
 } mr_ssh_callbacks;
 
 uint32_t mr_ssh_bridge_abi_version(void);

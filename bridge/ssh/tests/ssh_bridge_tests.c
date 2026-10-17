@@ -8,7 +8,10 @@
 
 #include "mremote/ssh_bridge.h"
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <pthread.h>
+#include <sys/socket.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +55,9 @@ typedef struct {
     uint32_t auth_requests;
     mr_ssh_auth_method last_rejected;
     mr_ssh_auth_method offered;
+
+    int32_t forward_errors[4];
+    int forward_reports;
 
     char *output;
     size_t output_length;
@@ -173,13 +179,30 @@ static size_t on_output(void *context, const uint8_t *bytes, size_t length) {
     return length;
 }
 
+static void on_forward(void *context, size_t index, int32_t error) {
+    harness *h = context;
+    pthread_mutex_lock(&h->lock);
+    if (index < 4) h->forward_errors[index] = error;
+    h->forward_reports++;
+    pthread_cond_broadcast(&h->cond);
+    pthread_mutex_unlock(&h->lock);
+}
+
 static void *run_thread(void *argument) {
     harness *h = argument;
     mr_ssh_session_run(h->session);
     return NULL;
 }
 
+static void harness_start_with(harness *h, plan_kind plan, const char *key, uint16_t port,
+                               const mr_ssh_forward *forwards, size_t forward_count);
+
 static void harness_start(harness *h, plan_kind plan, const char *key, uint16_t port) {
+    harness_start_with(h, plan, key, port, NULL, 0);
+}
+
+static void harness_start_with(harness *h, plan_kind plan, const char *key, uint16_t port,
+                               const mr_ssh_forward *forwards, size_t forward_count) {
     memset(h, 0, sizeof *h);
     pthread_mutex_init(&h->lock, NULL);
     pthread_cond_init(&h->cond, NULL);
@@ -195,12 +218,15 @@ static void harness_start(harness *h, plan_kind plan, const char *key, uint16_t 
         .rows = 24,
         .keepalive_seconds = 5,
         .connect_timeout_ms = 5000,
+        .forwards = forwards,
+        .forward_count = forward_count,
     };
     mr_ssh_callbacks callbacks = {
         .on_state = on_state,
         .on_host_key = on_host_key,
         .on_auth_request = on_auth_request,
         .on_output = on_output,
+        .on_forward = on_forward,
     };
     mr_ssh_status status = mr_ssh_session_create(&config, &callbacks, h, &h->session);
     CHECK(status == MR_SSH_STATUS_OK, "create=%d", status);
@@ -398,6 +424,144 @@ static void test_refused_output_is_held_not_lost(void) {
     harness_finish(&h, thread);
 }
 
+/* An echo server on 127.0.0.1, standing in for what is behind the SSH
+ * server (an RDP host, say). */
+typedef struct {
+    int listener;
+    uint16_t port;
+} echo_server;
+
+static void *echo_connection(void *argument) {
+    int fd = (int)(intptr_t)argument;
+    {
+        char buffer[16384];
+        ssize_t n;
+        while ((n = read(fd, buffer, sizeof buffer)) > 0) {
+            ssize_t off = 0;
+            while (off < n) {
+                ssize_t w = write(fd, buffer + off, (size_t)(n - off));
+                if (w <= 0) break;
+                off += w;
+            }
+        }
+        close(fd);
+    }
+    return NULL;
+}
+
+/* One thread per connection: the forward carries several at once. */
+static void *echo_thread(void *argument) {
+    echo_server *server = argument;
+    for (;;) {
+        int fd = accept(server->listener, NULL, NULL);
+        if (fd < 0) return NULL;
+        pthread_t thread;
+        pthread_create(&thread, NULL, echo_connection, (void *)(intptr_t)fd);
+        pthread_detach(thread);
+    }
+}
+
+static uint16_t bound_port(int fd) {
+    struct sockaddr_in address;
+    socklen_t length = sizeof address;
+    getsockname(fd, (struct sockaddr *)&address, &length);
+    return ntohs(address.sin_port);
+}
+
+static int listen_loopback(uint16_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in address = { .sin_len = sizeof address, .sin_family = AF_INET,
+                                   .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    if (bind(fd, (struct sockaddr *)&address, sizeof address) != 0 || listen(fd, 4) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static int connect_loopback(uint16_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in address = { .sin_len = sizeof address, .sin_family = AF_INET,
+                                   .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    if (connect(fd, (struct sockaddr *)&address, sizeof address) != 0) {
+        close(fd);
+        return -1;
+    }
+    struct timeval timeout = { .tv_sec = 10 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+    return fd;
+}
+
+static void test_a_local_forward_carries_data_both_ways(void) {
+    printf("port forward\n");
+    echo_server server = { .listener = listen_loopback(0) };
+    server.port = bound_port(server.listener);
+    pthread_t echo;
+    pthread_create(&echo, NULL, echo_thread, &server);
+
+    /* A free port for the forward, and one already taken. */
+    int probe = listen_loopback(0);
+    uint16_t local = bound_port(probe);
+    close(probe);
+    int taken = listen_loopback(0);
+    uint16_t taken_port = bound_port(taken);
+
+    mr_ssh_forward forwards[2] = {
+        { .local_port = local, .remote_host = "127.0.0.1", .remote_port = server.port },
+        { .local_port = taken_port, .remote_host = "127.0.0.1", .remote_port = server.port },
+    };
+    harness h;
+    harness_start_with(&h, PLAN_KEY, "user_ed25519", g_port, forwards, 2);
+    pthread_t thread;
+    pthread_create(&thread, NULL, run_thread, &h);
+    write_text(&h, "echo fwd-$((1+2))\n");
+    CHECK(wait_for(&h, "fwd-3", 15), "not connected");
+    CHECK(h.forward_reports == 2, "forward reports %d", h.forward_reports);
+    CHECK(h.forward_errors[0] == 0, "forward 0 error %d", h.forward_errors[0]);
+    CHECK(h.forward_errors[1] != 0, "a taken port was reported as listening");
+
+    /* Two connections at once, each with a megabyte through it. */
+    const size_t total = 1024u * 1024u;
+    for (int round = 0; round < 2; round++) {
+        int a = connect_loopback(local);
+        int b = connect_loopback(local);
+        CHECK(a >= 0 && b >= 0, "connect through the forward");
+        if (a < 0 || b < 0) break;
+        uint8_t *payload = malloc(total);
+        for (size_t i = 0; i < total; i++) payload[i] = (uint8_t)(i * 31 + round);
+        uint8_t *echoed = malloc(total);
+        int fds[2] = { a, b };
+        for (int k = 0; k < 2; k++) {
+            size_t sent = 0, received = 0;
+            while (received < total) {
+                if (sent < total) {
+                    size_t chunk = total - sent < 65536 ? total - sent : 65536;
+                    ssize_t w = write(fds[k], payload + sent, chunk);
+                    if (w > 0) sent += (size_t)w;
+                }
+                ssize_t r = read(fds[k], echoed + received, total - received);
+                if (r <= 0) break;
+                received += (size_t)r;
+            }
+            CHECK(received == total, "echoed %zu of %zu", received, total);
+            CHECK(memcmp(payload, echoed, total) == 0, "data changed on the way");
+        }
+        close(a);
+        close(b);
+        free(payload);
+        free(echoed);
+    }
+
+    write_text(&h, "exit\n");
+    wait_for(&h, NULL, 15);
+    harness_finish(&h, thread);
+    CHECK(connect_loopback(local) < 0, "the forward still listens after the session");
+    close(taken);
+    shutdown(server.listener, SHUT_RDWR);
+    close(server.listener);
+    pthread_join(echo, NULL);
+}
+
 static void test_invalid_arguments_are_refused(void) {
     printf("argument checks\n");
     mr_ssh_session *session = NULL;
@@ -452,6 +616,7 @@ int main(void) {
     test_a_refused_port_is_reported();
     test_a_resize_reaches_the_pty();
     test_refused_output_is_held_not_lost();
+    test_a_local_forward_carries_data_both_ways();
 
     if (g_failures) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);
