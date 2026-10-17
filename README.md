@@ -1,7 +1,7 @@
 # mRemote
 
-An RDP client for iPadOS/iOS, and for macOS through Mac Catalyst. Its reason
-to exist is the Japanese keyboard: the Eisu and Kana keys on a physical JIS
+An RDP and SSH client for iPadOS/iOS, and for macOS through Mac Catalyst. Its
+reason to exist is the Japanese keyboard: the Eisu and Kana keys on a physical JIS
 keyboard are sent to Windows as Muhenkan and Henkan instead of being consumed
 by the system's input switcher.
 
