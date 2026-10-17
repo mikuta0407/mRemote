@@ -128,6 +128,8 @@ struct mr_ssh_session {
     /* A send to the socket failed (errno), or the connection is being torn
      * down (EPIPE): every later libssh2 send fails at once. */
     int send_error;
+    /* The socket gave libssh2 bytes since the run loop last cleared this. */
+    int received;
 };
 
 static pthread_once_t g_libssh2_once = PTHREAD_ONCE_INIT;
@@ -735,6 +737,16 @@ static LIBSSH2_SEND_FUNC(send_callback) {
     return (ssize_t)length;
 }
 
+/* libssh2's recv, as its own, noting that bytes came in: the run loop then
+ * looks for data a call pulled in for a channel other than its own. */
+static LIBSSH2_RECV_FUNC(recv_callback) {
+    mr_ssh_session *s = *abstract;
+    ssize_t n = recv(socket, buffer, length, flags);
+    if (n < 0) return errno == EWOULDBLOCK || errno == EINTR ? -EAGAIN : -errno;
+    if (n > 0) s->received = 1;
+    return n;
+}
+
 /* Waits until the socket is ready in the directions libssh2 is blocked on
  * (plus extra_events), or the wake pipe fires, or timeout_ms passes (-1
  * waits for ever). Sends the send queue on meanwhile. Returns -1 when a stop
@@ -1162,6 +1174,8 @@ static int authenticate(mr_ssh_session *s, mr_ssh_failure *failure, int32_t *det
         return -1;
     }
     mr_ssh_auth_method offered = parse_methods(list);
+    /* Without a callback the prompts could only be cancelled. */
+    if (!s->callbacks.on_keyboard_interactive) offered &= ~(mr_ssh_auth_method)MR_SSH_AUTH_KEYBOARD_INTERACTIVE;
     if (!offered) {
         *failure = MR_SSH_FAILURE_AUTHENTICATION;
         return -1;
@@ -1316,11 +1330,16 @@ static void run_shell(mr_ssh_session *s) {
     }
 
     int paused = 0;
+    /* The size of a resize libssh2 has begun to send: once it says EAGAIN it
+     * finishes that packet, whatever size the next call asks for. */
+    int resize_in_flight = 0;
+    uint16_t sent_columns = 0, sent_rows = 0, sent_pw = 0, sent_ph = 0;
     for (;;) {
         if (stop_requested(s)) {
             report_state(s, MR_SSH_STATE_CLOSED, MR_SSH_FAILURE_CANCELLED, -1);
             break;
         }
+        s->received = 0;
 
         /* The caller made room. */
         pthread_mutex_lock(&s->lock);
@@ -1338,13 +1357,22 @@ static void run_shell(mr_ssh_session *s) {
         int fatal = 0;
         int resize_blocked = 0;
         if (resize) {
-            int rc = libssh2_channel_request_pty_size_ex(s->channel, columns, rows, pw, ph);
+            if (!resize_in_flight) {
+                sent_columns = columns;
+                sent_rows = rows;
+                sent_pw = pw;
+                sent_ph = ph;
+            }
+            int rc = libssh2_channel_request_pty_size_ex(s->channel, sent_columns, sent_rows,
+                                                         sent_pw, sent_ph);
             resize_blocked = rc == LIBSSH2_ERROR_EAGAIN;
+            resize_in_flight = resize_blocked;
             if (!resize_blocked) {
                 pthread_mutex_lock(&s->lock);
-                /* Only if no newer size came in meanwhile. */
-                if (s->columns == columns && s->rows == rows && s->pixel_width == pw &&
-                    s->pixel_height == ph) {
+                /* Only if what went out is still the size: else the newer
+                 * one is sent next. */
+                if (s->columns == sent_columns && s->rows == sent_rows &&
+                    s->pixel_width == sent_pw && s->pixel_height == sent_ph) {
                     s->resize_pending = 0;
                 }
                 pthread_mutex_unlock(&s->lock);
@@ -1453,6 +1481,19 @@ static void run_shell(mr_ssh_session *s) {
         int more = (s->resize_pending && !resize_blocked) || (s->input_length && !want_write) || (paused && s->resume_requested);
         pthread_mutex_unlock(&s->lock);
         if (more || forwarded > 0) continue;
+        /* A call reads whatever the socket has, for every channel, and may
+         * say EAGAIN for its own: a tunnel's read can pull in the shell's
+         * data, or another tunnel's, after that channel's read this round.
+         * The socket is then no longer readable, so that data is read now,
+         * not on the next unrelated packet. Only when bytes came in this
+         * round: what was already waiting when its channel's read said
+         * EAGAIN (a read blocked behind a key exchange) is not retried
+         * until more arrives, so this never spins. */
+        if (s->received) {
+            unsigned long queued = 0;
+            if (!paused) libssh2_channel_window_read_ex(s->channel, &queued, NULL);
+            if (queued > 0 || mr_forwarder_data_waiting(forwarder)) continue;
+        }
 
         /* Always readable: paused or not, the loop reads whatever arrives. */
         if (wait_io(s, POLLIN, timeout_ms, forwarder) < 0) continue;  /* the loop reports the stop */
@@ -1536,6 +1577,7 @@ mr_ssh_status mr_ssh_session_run(mr_ssh_session *s) {
     }
     libssh2_session_set_blocking(s->ssh, 0);
     libssh2_session_callback_set2(s->ssh, LIBSSH2_CALLBACK_SEND, (libssh2_cb_generic *)send_callback);
+    libssh2_session_callback_set2(s->ssh, LIBSSH2_CALLBACK_RECV, (libssh2_cb_generic *)recv_callback);
 
     {
         int rc;

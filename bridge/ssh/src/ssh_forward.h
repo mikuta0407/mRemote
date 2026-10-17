@@ -38,8 +38,14 @@ size_t mr_forwarder_max_fds(const mr_forwarder *forwarder);
 int mr_forwarder_step(mr_forwarder *forwarder);
 
 /* How long the poll may wait before mr_forwarder_step must run again, even
- * with nothing ready (a closing tunnel's deadline), in ms; -1 for no limit. */
+ * with nothing ready (a closing tunnel's deadline, the end of a listener's
+ * back-off after a failed accept), in ms; -1 for no limit. */
 int mr_forwarder_timeout_ms(const mr_forwarder *forwarder);
+
+/* Whether an open tunnel with room for it has data, or its EOF, waiting
+ * inside libssh2 - pulled in by another channel's call after its own read
+ * said EAGAIN. Polling the socket would then leave it there. */
+int mr_forwarder_data_waiting(const mr_forwarder *forwarder);
 
 /* Channels still open are left to libssh2_session_free. */
 void mr_forwarder_destroy(mr_forwarder *forwarder);

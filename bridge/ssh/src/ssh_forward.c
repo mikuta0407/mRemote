@@ -22,6 +22,9 @@
  * data inside libssh2, so past this closing tunnels keep their slots, and
  * new connections wait. */
 #define MAX_ABANDONED 8u
+/* A listener whose accept failed for want of resources (descriptors,
+ * memory) stays readable; it is left alone this long rather than spun on. */
+#define ACCEPT_BACKOFF_MS 1000
 
 /* OPENING also covers waiting for a turn to open. CLOSING: the client is
  * gone, and the channel is being closed without blocking. */
@@ -51,6 +54,7 @@ typedef struct {
     uint16_t local_port;
     char *remote_host;
     uint16_t remote_port;
+    int64_t retry_at;  /* not accepted from before this (ms); 0 = now */
 } listener;
 
 struct mr_forwarder {
@@ -81,7 +85,32 @@ static int set_nonblocking(int fd) {
     return flags < 0 ? -1 : fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+/* Whether another socket listens on the port on all addresses (0.0.0.0, or
+ * [::] taking IPv4 too). With SO_REUSEADDR a bind to 127.0.0.1 would still
+ * succeed and take that socket's loopback connections; a probe bound to
+ * 0.0.0.0, with the same option, fails just then - and not for what the
+ * option is there for: our own earlier connections left in TIME_WAIT. */
+static int wildcard_taken(uint16_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return 0;  /* the real bind will say */
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof address);
+    address.sin_len = sizeof address;
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    int taken = bind(fd, (struct sockaddr *)&address, sizeof address) != 0 && errno == EADDRINUSE;
+    close(fd);
+    return taken;
+}
+
 static int open_listener(uint16_t port, int *error) {
+    if (port != 0 && wildcard_taken(port)) {
+        *error = EADDRINUSE;
+        return -1;
+    }
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         *error = errno;
@@ -150,7 +179,9 @@ size_t mr_forwarder_fill_pollfds(mr_forwarder *f, struct pollfd *fds) {
     if (!f) return 0;
     size_t n = 0;
     if (f->tunnel_count < MR_SSH_MAX_TUNNELS) {
+        int64_t now = now_ms();
         for (size_t i = 0; i < f->listener_count; i++) {
+            if (now < f->listeners[i].retry_at) continue;  /* backing off */
             fds[n].fd = f->listeners[i].fd;
             fds[n].events = POLLIN;
             fds[n].revents = 0;
@@ -195,13 +226,25 @@ static int retire_tunnel(mr_forwarder *f, size_t index) {
 
 static int accept_connections(mr_forwarder *f) {
     int progress = 0;
+    int64_t now = now_ms();
     for (size_t i = 0; i < f->listener_count; i++) {
+        listener *l = &f->listeners[i];
+        if (now < l->retry_at) continue;
+        l->retry_at = 0;
         /* At the limit, connections are left in the listen queue. */
         while (f->tunnel_count < MR_SSH_MAX_TUNNELS) {
             struct sockaddr_in peer;
             socklen_t length = sizeof peer;
-            int fd = accept(f->listeners[i].fd, (struct sockaddr *)&peer, &length);
-            if (fd < 0) break;
+            int fd = accept(l->fd, (struct sockaddr *)&peer, &length);
+            if (fd < 0) {
+                /* Out of descriptors or memory, the connection stays queued
+                 * and the listener readable. */
+                if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR &&
+                    errno != ECONNABORTED) {
+                    l->retry_at = now + ACCEPT_BACKOFF_MS;
+                }
+                break;
+            }
             int one = 1;
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
             setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
@@ -209,6 +252,7 @@ static int accept_connections(mr_forwarder *f) {
             if (!t || set_nonblocking(fd) != 0) {
                 free(t);
                 close(fd);
+                l->retry_at = now + ACCEPT_BACKOFF_MS;
                 break;
             }
             t->fd = fd;
@@ -403,17 +447,37 @@ int mr_forwarder_step(mr_forwarder *f) {
 }
 
 int mr_forwarder_timeout_ms(const mr_forwarder *f) {
-    if (!f || f->abandoned >= MAX_ABANDONED) return -1;
+    if (!f) return -1;
     int64_t earliest = -1;
-    for (size_t i = 0; i < f->tunnel_count; i++) {
+    /* Past the limit, closing tunnels wait for their CLOSE however long. */
+    for (size_t i = 0; i < f->tunnel_count && f->abandoned < MAX_ABANDONED; i++) {
         const tunnel *t = f->tunnels[i];
         if (t->state == TUNNEL_CLOSING && (earliest < 0 || t->close_deadline < earliest)) {
             earliest = t->close_deadline;
         }
     }
+    /* A listener backing off, polled again once that is over. */
+    for (size_t i = 0; i < f->listener_count && f->tunnel_count < MR_SSH_MAX_TUNNELS; i++) {
+        int64_t at = f->listeners[i].retry_at;
+        if (at && (earliest < 0 || at < earliest)) earliest = at;
+    }
     if (earliest < 0) return -1;
     int64_t left = earliest - now_ms();
     return left <= 0 ? 0 : (int)left;
+}
+
+int mr_forwarder_data_waiting(const mr_forwarder *f) {
+    if (!f) return 0;
+    for (size_t i = 0; i < f->tunnel_count; i++) {
+        const tunnel *t = f->tunnels[i];
+        /* Only tunnels step_tunnel would read now: one whose client is not
+         * taking what it has would count for ever. */
+        if (t->state != TUNNEL_OPEN || t->down_offset < t->down_length || t->channel_eof) continue;
+        unsigned long queued = 0;
+        libssh2_channel_window_read_ex(t->channel, &queued, NULL);
+        if (queued > 0 || libssh2_channel_eof(t->channel) == 1) return 1;
+    }
+    return 0;
 }
 
 void mr_forwarder_destroy(mr_forwarder *f) {

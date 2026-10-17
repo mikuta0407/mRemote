@@ -9,6 +9,7 @@
 #include "mremote/ssh_bridge.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
@@ -540,6 +541,18 @@ static int listen_loopback(uint16_t port) {
     return fd;
 }
 
+/* On all addresses, as another program's server might listen. */
+static int listen_any(uint16_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in address = { .sin_len = sizeof address, .sin_family = AF_INET,
+                                   .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_ANY) };
+    if (bind(fd, (struct sockaddr *)&address, sizeof address) != 0 || listen(fd, 4) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
 static int connect_loopback(uint16_t port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in address = { .sin_len = sizeof address, .sin_family = AF_INET,
@@ -560,26 +573,31 @@ static void test_a_local_forward_carries_data_both_ways(void) {
     pthread_t echo;
     pthread_create(&echo, NULL, echo_thread, &server);
 
-    /* A free port for the forward, and one already taken. */
+    /* A free port for the forward, one already taken, and one taken on all
+     * addresses - which a bind to 127.0.0.1 alone must not steal. */
     int probe = listen_loopback(0);
     uint16_t local = bound_port(probe);
     close(probe);
     int taken = listen_loopback(0);
     uint16_t taken_port = bound_port(taken);
+    int wildcard = listen_any(0);
+    uint16_t wildcard_port = bound_port(wildcard);
 
-    mr_ssh_forward forwards[2] = {
+    mr_ssh_forward forwards[3] = {
         { .local_port = local, .remote_host = "127.0.0.1", .remote_port = server.port },
         { .local_port = taken_port, .remote_host = "127.0.0.1", .remote_port = server.port },
+        { .local_port = wildcard_port, .remote_host = "127.0.0.1", .remote_port = server.port },
     };
     harness h;
-    harness_start_with(&h, PLAN_KEY, "user_ed25519", g_port, forwards, 2);
+    harness_start_with(&h, PLAN_KEY, "user_ed25519", g_port, forwards, 3);
     pthread_t thread;
     pthread_create(&thread, NULL, run_thread, &h);
     write_text(&h, "echo fwd-$((1+2))\n");
     CHECK(wait_for(&h, "fwd-3", 15), "not connected");
-    CHECK(h.forward_reports == 2, "forward reports %d", h.forward_reports);
+    CHECK(h.forward_reports == 3, "forward reports %d", h.forward_reports);
     CHECK(h.forward_errors[0] == 0, "forward 0 error %d", h.forward_errors[0]);
-    CHECK(h.forward_errors[1] != 0, "a taken port was reported as listening");
+    CHECK(h.forward_errors[1] == EADDRINUSE, "taken port: error %d", h.forward_errors[1]);
+    CHECK(h.forward_errors[2] == EADDRINUSE, "port taken on all addresses: error %d", h.forward_errors[2]);
 
     /* Two connections at once, each with a megabyte through it. */
     const size_t total = 1024u * 1024u;
@@ -618,6 +636,7 @@ static void test_a_local_forward_carries_data_both_ways(void) {
     harness_finish(&h, thread);
     CHECK(connect_loopback(local) < 0, "the forward still listens after the session");
     close(taken);
+    close(wildcard);
     shutdown(server.listener, SHUT_RDWR);
     close(server.listener);
     pthread_join(echo, NULL);
