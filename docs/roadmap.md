@@ -378,7 +378,7 @@ iPhone Duo（Xcode 27.1 beta のシミュレータ）向け。仕様は docs/ui-
 
 ## 10. Phase 8 — SSH 拡張（将来）
 
-RDP v1 の後、次を新規 module として追加する。
+RDP v1 の後、次を新規 module として追加する。詳細設計と段階（8.0〜8.5）は [ssh-design.md](ssh-design.md)。
 
 - `SSHConfiguration` と credential/host key trust
 - `SSHRemoteSession`（接続 lifecycle/state/event）

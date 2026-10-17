@@ -78,7 +78,7 @@ flowchart TB
 | `RemoteSurface` | `App/Session/`（Phase 2 で追加）。frame store と viewport 変換は `SessionCore` にあり、UIKit/Metal 面だけがアプリ側にある |
 | `FreeRDPBridge` | `bridge/`（C）と `artifacts/` の生成 XCFramework |
 
-将来は `SSHProtocol` と `TerminalSurface` を追加する。`ConnectionFeature` は protocol discriminator に応じた設定セクションを差し込み、`SessionFeature` は session が提供する surface kind (`desktop`/`terminal`) を表示する。
+将来は `SSHProtocol` と `TerminalSurface` を追加する。`ConnectionFeature` は protocol discriminator に応じた設定セクションを差し込み、`SessionFeature` は session が提供する surface kind (`desktop`/`terminal`) を表示する。詳細は [ssh-design.md](ssh-design.md)。
 
 ## 4. コア interface
 
