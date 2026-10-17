@@ -98,8 +98,10 @@ struct MacCommands: Commands {
             CommandGroup(replacing: .newItem) {
                 Button("新しい接続先…") { showList(.newConnection) }
                     .keyboardShortcut("n", modifiers: .command)
+                // ⌘0 is the terminal's 標準の文字サイズ while one has focus,
+                // as in Terminal.app; the first menu item with a key wins.
                 Button("接続先の一覧") { showList(nil) }
-                    .keyboardShortcut("0", modifiers: .command)
+                    .keyboardShortcut(focusedTerminal ? nil : KeyboardShortcut("0", modifiers: .command))
             }
             CommandMenu("セッション") {
                 SessionCommands(session: environment.runningSessions.first { $0.id == environment.focusedSessionID })
@@ -109,6 +111,10 @@ struct MacCommands: Commands {
 
     /// `openWindow(id:)` makes another list window every time, so it is
     /// only called when none is open.
+    private var focusedTerminal: Bool {
+        environment.runningSessions.first { $0.id == environment.focusedSessionID }?.terminal != nil
+    }
+
     private func showList(_ request: ListRequest?) {
         if environment.listWindowCount == 0 {
             openWindow(id: "main")

@@ -1,4 +1,5 @@
 import Foundation
+import os
 import SessionCore
 
 /// What the bridge reports, copied out of its callbacks.
@@ -171,11 +172,21 @@ final class SSHNativeSession: @unchecked Sendable {
 
     func requestStop() { gate.requestStop() }
 
+    /// An answer the bridge refused (too long, the wrong number of answers)
+    /// would leave its run thread waiting with nothing on screen to answer;
+    /// end the attempt instead. A stale one is already over.
+    private func checkAnswer(_ status: mr_ssh_status?) {
+        guard let status, status != mr_ssh_status(MR_SSH_STATUS_OK),
+              status != mr_ssh_status(MR_SSH_ERROR_STALE_CHALLENGE) else { return }
+        sshLog.error("the bridge refused an answer: \(status, privacy: .public)")
+        gate.requestStop()
+    }
+
     func answerHostKey(_ challengeID: UInt64, accept: Bool) {
-        gate.call {
+        checkAnswer(gate.call {
             mr_ssh_session_answer_host_key($0, challengeID,
                                            mr_ssh_host_key_decision(accept ? MR_SSH_HOST_KEY_ACCEPT : MR_SSH_HOST_KEY_REJECT))
-        }
+        })
     }
 
     /// `method` 0 abandons the sign-in.
@@ -187,7 +198,7 @@ final class SSHNativeSession: @unchecked Sendable {
             secret.withUnsafeMutableBytes { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) }
             passphrase.withUnsafeMutableBytes { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) }
         }
-        gate.call { session in
+        checkAnswer(gate.call { session in
             secret.withUnsafeBufferPointer { secretBuffer in
                 passphrase.withUnsafeBufferPointer { passphraseBuffer in
                     var answer = mr_ssh_auth_answer(
@@ -200,7 +211,7 @@ final class SSHNativeSession: @unchecked Sendable {
                     return mr_ssh_session_answer_auth(session, challengeID, &answer)
                 }
             }
-        }
+        })
     }
 
     func answerKeyboardInteractive(_ challengeID: UInt64, answers: [String]) {
@@ -211,7 +222,7 @@ final class SSHNativeSession: @unchecked Sendable {
             }
         }
         let lengths = copies.map(\.count)
-        gate.call { session in
+        checkAnswer(gate.call { session in
             // Pointers into each copy for the duration of the call.
             func withPointers(_ index: Int, _ collected: [UnsafePointer<UInt8>?], _ body: ([UnsafePointer<UInt8>?]) -> mr_ssh_status) -> mr_ssh_status {
                 if index == copies.count { return body(collected) }
@@ -225,7 +236,7 @@ final class SSHNativeSession: @unchecked Sendable {
                     }
                 }
             }
-        }
+        })
     }
 
     func cancelChallenge(_ challengeID: UInt64) {

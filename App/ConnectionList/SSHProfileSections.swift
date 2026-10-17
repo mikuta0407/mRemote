@@ -22,6 +22,9 @@ struct SSHProfileSections: View {
                 }
             }
             .accessibilityIdentifier("profile-ssh-key-picker")
+            // On the picker's own row: the Form builds rows lazily, so a
+            // later section may not have appeared yet.
+            .onAppear(perform: reloadKeys)
             NavigationLink("鍵を管理…") {
                 SSHKeysView(onChange: reloadKeys)
             }
@@ -107,11 +110,13 @@ struct SSHProfileSections: View {
         }
 
         SSHPortForwardSection(forwards: $model.portForwards)
-            .onAppear(perform: reloadKeys)
     }
 
     private func reloadKeys() {
-        keys = (try? environment.sshKeys.allKeys()) ?? []
+        // A failed read keeps the selection: saving would otherwise unbind
+        // the profile's key.
+        guard let loaded = try? environment.sshKeys.allKeys() else { return }
+        keys = loaded
         if let selected = model.sshKeyID, !keys.contains(where: { $0.id == selected }) {
             model.sshKeyID = nil
         }

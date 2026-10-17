@@ -4,7 +4,7 @@ import AppleAdapters
 import SSHProtocol
 import SessionCore
 
-private let sshLog = Logger(subsystem: "com.mikuta0407.mRemote", category: "ssh")
+let sshLog = Logger(subsystem: "com.mikuta0407.mRemote", category: "ssh")
 
 /// Keystrokes and pastes on their way to the bridge. Retargeted to each
 /// attempt's native session; refuses while not connected.
@@ -180,6 +180,7 @@ actor SSHRemoteSession: TerminalSession {
 
         case let (.credential, .signIn(id, offered), .credential(_, _, password, save)):
             passwordToSave = save && !password.isEmpty ? password : nil
+            lastSignInMethod = .password
             resumeAttempt()
             native?.answerSignIn(id, method: SSHSignInMethods.password.rawValue, secret: Array(password.utf8))
             _ = offered
@@ -203,6 +204,9 @@ actor SSHRemoteSession: TerminalSession {
 
     /// A password typed before the connection existed, used once.
     private var typedPassword: String?
+    /// What the last sign-in answer used; the one the server accepted once
+    /// the shell opens.
+    private var lastSignInMethod: SSHSignInMethods?
 
     func setVisibility(_ visibility: SessionVisibility) {
         // The shell keeps running and its output keeps being drained off
@@ -295,7 +299,18 @@ actor SSHRemoteSession: TerminalSession {
             let fingerprint = HostKeyFingerprint.sha256(of: blob)
             let host = configuration.endpoint.host
             let port = configuration.endpoint.port
-            let decision = (try? knownHosts.decision(host: host, port: port, fingerprint: fingerprint)) ?? .unknown
+            let decision: KnownHostDecision
+            do {
+                decision = try knownHosts.decision(host: host, port: port, fingerprint: fingerprint)
+            } catch {
+                // Unreadable is not unknown: a changed key would be offered
+                // as a first connection and overwritten. Refuse instead.
+                sshLog.error("could not read the known host: \(String(describing: error), privacy: .public)")
+                terminationCause = .failed(.internalFailure(
+                    detail: String(localized: "保存済みのホスト鍵を読めませんでした（\(String(describing: error))）")))
+                native?.answerHostKey(id, accept: false)
+                return
+            }
             switch decision {
             case .matches:
                 native?.answerHostKey(id, accept: true)
@@ -337,6 +352,7 @@ actor SSHRemoteSession: TerminalSession {
     private func perform(_ step: SSHSignInPlanner.Step, challengeID: UInt64, offered: SSHSignInMethods) {
         switch step {
         case .publicKey(let passphrase):
+            lastSignInMethod = .publicKey
             native?.answerSignIn(
                 challengeID, method: SSHSignInMethods.publicKey.rawValue,
                 secret: privateKey, passphrase: passphrase.map { Array($0.utf8) } ?? [])
@@ -346,8 +362,10 @@ actor SSHRemoteSession: TerminalSession {
             raise(.keyPassphrase(KeyPassphraseChallenge(
                 generation: machine.generation, keyName: name, previousWasRejected: previousWasRejected)))
         case .keyboardInteractive:
+            lastSignInMethod = .keyboardInteractive
             native?.answerSignIn(challengeID, method: SSHSignInMethods.keyboardInteractive.rawValue)
         case .password(let password):
+            lastSignInMethod = .password
             native?.answerSignIn(challengeID, method: SSHSignInMethods.password.rawValue, secret: Array(password.utf8))
         case .askPassword(let storedWasRejected):
             bridgeWait = .signIn(id: challengeID, offered: offered)
@@ -374,7 +392,7 @@ actor SSHRemoteSession: TerminalSession {
             if machine.transition(to: .connected) != nil {
                 emit(.stateChanged(machine.state, generation: machine.generation))
             }
-            if size != .standard { native?.resize(size) }
+            native?.resize(size)
             if let command = settings.startupCommand {
                 _ = native?.write(Array((command + "\r").utf8))
             }
@@ -388,6 +406,9 @@ actor SSHRemoteSession: TerminalSession {
         case Int32(MR_SSH_STATE_FAILED):
             let bridgeFailure = SSHBridgeFailure(rawValue: failure) ?? .internal
             sshLog.error("ssh failed: \(failure, privacy: .public) detail \(detail, privacy: .public)")
+            // A host key refused because the store could not be read keeps
+            // that reason rather than reading as the user's rejection.
+            if bridgeFailure == .hostKeyRejected, case .failed = terminationCause { break }
             terminationCause = .failed(bridgeFailure.sessionError(detail: detail) ?? .internalFailure(detail: "ssh"))
         default:
             break
@@ -395,7 +416,10 @@ actor SSHRemoteSession: TerminalSession {
     }
 
     private func saveSecretsAfterSignIn() {
-        if let passphrase = passphraseToSave, let keyID = settings.authentication.keyID {
+        // Only a passphrase the key actually signed in with: one typed wrong
+        // before falling back to a password must not be kept.
+        if lastSignInMethod == .publicKey, let passphrase = passphraseToSave,
+           let keyID = settings.authentication.keyID {
             try? keys.storePassphrase(passphrase, for: keyID)
         }
         if let password = passwordToSave, let reference = configuration.account.credentialReference {

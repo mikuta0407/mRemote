@@ -113,6 +113,9 @@ final class TerminalKeyEncoderTests: XCTestCase {
         let bytes = TerminalKeyEncoder.paste("ls\n\u{1B}[201~rm -rf ~\n", bracketed: true)
         XCTAssertEqual(text(bytes), "\u{1B}[200~ls\rrm -rf ~\r\u{1B}[201~")
         XCTAssertEqual(text(TerminalKeyEncoder.paste("a\r\nb", bracketed: false)), "a\rb")
+        // A marker split around another one is removed too.
+        let nested = TerminalKeyEncoder.paste("\u{1B}[20\u{1B}[201~1~rm -rf ~\n", bracketed: true)
+        XCTAssertEqual(text(nested), "\u{1B}[200~rm -rf ~\r\u{1B}[201~")
     }
 
     func testOnlyAnUnbracketedMultiLinePasteNeedsConfirmation() {

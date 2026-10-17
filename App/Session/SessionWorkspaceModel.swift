@@ -91,8 +91,16 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
     private let desktop: (any DesktopSession)?
     /// Set instead for an SSH session (docs/ssh-design.md 8.2).
     let terminal: (any TerminalSession)?
-    /// The terminal on screen, for the menu's font size and clear commands.
-    @ObservationIgnored weak var terminalView: SessionTerminalView?
+    /// The session's terminal, for the menu's font size and clear commands.
+    /// Held here, not by the screen: it is the terminal's state, and comes
+    /// back when the session is shown again.
+    @ObservationIgnored var terminalView: SessionTerminalView?
+
+    /// The session closed for good.
+    func releaseTerminal() {
+        terminalView?.detach()
+        terminalView = nil
+    }
     /// What the shell put in the title (OSC 0/2), shown in the window title.
     var terminalTitle: String?
     /// A multi-line paste waiting for the user to confirm it.
@@ -358,6 +366,15 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
                 transportSecurity = nil
                 macExtensions = nil
             }
+            if state == .connected, let pending = credentialToSaveOnConnect {
+                credentialToSaveOnConnect = nil
+                if let profileID = configuration.profileID {
+                    await environment.persistCredential(
+                        profileID: profileID, username: pending.username,
+                        domain: pending.domain, password: pending.password)
+                }
+            }
+            if state == .failed || state == .disconnected { credentialToSaveOnConnect = nil }
             if state == .connected {
                 lastError = nil
                 hadConnected = true
@@ -858,6 +875,13 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
         }
     }
 
+    private struct PendingCredential {
+        let username: String
+        let domain: String?
+        let password: String
+    }
+    private var credentialToSaveOnConnect: PendingCredential?
+
     /// Saving happens here rather than inside the session because a profile
     /// that has never stored a password has no Keychain reference yet, and
     /// creating one is a change to the profile document.
@@ -867,7 +891,13 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
         password: String,
         save: Bool
     ) async {
-        if save, !password.isEmpty, let profileID = configuration.profileID {
+        // SSH keeps it until the server has accepted it (docs/ssh-design.md
+        // 7.3): a mistyped password saved now would be sent, and rejected,
+        // on every later connect.
+        if configuration.protocolKind == .ssh {
+            credentialToSaveOnConnect = save && !password.isEmpty
+                ? PendingCredential(username: username, domain: domain, password: password) : nil
+        } else if save, !password.isEmpty, let profileID = configuration.profileID {
             await environment.persistCredential(
                 profileID: profileID,
                 username: username,

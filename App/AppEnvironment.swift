@@ -346,6 +346,7 @@ final class AppEnvironment {
         _ = await sessions.remove(id)
         focusedSessionID = await sessions.focusedSessionID
         await sessions.applyVisibilityPolicy()
+        runningSessions.first { $0.id == id }?.releaseTerminal()
         runningSessions.removeAll { $0.id == id }
         if presentedSession?.id == id { presentedSession = nil }
         refreshAudioFocus()

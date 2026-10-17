@@ -114,8 +114,12 @@ public enum TerminalKeyEncoder {
         var normalised = text.replacingOccurrences(of: "\r\n", with: "\r")
             .replacingOccurrences(of: "\n", with: "\r")
         guard bracketed else { return Array(normalised.utf8) }
-        normalised = normalised.replacingOccurrences(of: "\u{1B}[200~", with: "")
-            .replacingOccurrences(of: "\u{1B}[201~", with: "")
+        // Until none is left: removing one can join the text around it into
+        // another ("ESC[20" + "ESC[201~" + "1~").
+        while normalised.contains("\u{1B}[200~") || normalised.contains("\u{1B}[201~") {
+            normalised = normalised.replacingOccurrences(of: "\u{1B}[200~", with: "")
+                .replacingOccurrences(of: "\u{1B}[201~", with: "")
+        }
         return csi("200~") + Array(normalised.utf8) + csi("201~")
     }
 

@@ -15,6 +15,11 @@ struct TerminalSurface: UIViewRepresentable {
     let session: any TerminalSession
     let settings: EffectiveSSHSettings
     let isInputEnabled: Bool
+    var clipboardPolicy: ClipboardPolicy = .bidirectional
+    /// The session's terminal from an earlier appearance. Reused, so the
+    /// screen, scrollback and the modes the remote program set survive a
+    /// trip to the list and back.
+    var existing: SessionTerminalView?
     var onSendRefused: () -> Void = {}
     var onPasteNeedsConfirmation: (String, @escaping () -> Void) -> Void = { _, proceed in proceed() }
     var onOpenLink: (URL) -> Void = { _ in }
@@ -23,7 +28,7 @@ struct TerminalSurface: UIViewRepresentable {
     var onReady: (SessionTerminalView) -> Void = { _ in }
 
     func makeUIView(context: Context) -> SessionTerminalView {
-        let view = SessionTerminalView(session: session, settings: settings)
+        let view = existing ?? SessionTerminalView(session: session, settings: settings)
         apply(to: view)
         onReady(view)
         return view
@@ -35,27 +40,34 @@ struct TerminalSurface: UIViewRepresentable {
 
     private func apply(to view: SessionTerminalView) {
         view.isInputEnabled = isInputEnabled
+        view.clipboardPolicy = clipboardPolicy
         view.onSendRefused = onSendRefused
         view.onPasteNeedsConfirmation = onPasteNeedsConfirmation
         view.onOpenLink = onOpenLink
         view.onTitle = onTitle
     }
 
-    static func dismantleUIView(_ view: SessionTerminalView, coordinator: ()) {
-        view.detach()
-    }
+    // No dismantleUIView: the view outlives this appearance. The workspace
+    // detaches it when the session closes.
 }
 
 final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDelegate {
     private let session: any TerminalSession
     private let settings: EffectiveSSHSettings
+    /// User input: keys, the key bar, paste. The terminal's own replies to
+    /// the remote program's queries are sent regardless.
     var isInputEnabled = true
+    var clipboardPolicy: ClipboardPolicy = .bidirectional
     var onSendRefused: () -> Void = {}
     var onPasteNeedsConfirmation: (String, @escaping () -> Void) -> Void = { _, proceed in proceed() }
     var onOpenLink: (URL) -> Void = { _ in }
     var onTitle: (String) -> Void = { _ in }
 
     private var draining = false
+    /// True while output is fed in: what SwiftTerm sends then is a reply
+    /// (DSR, DA), not user input.
+    private var feeding = false
+    private var detached = false
     private var resizeTask: Task<Void, Never>?
     private var fontSize: CGFloat
 
@@ -95,22 +107,28 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
     }
     #endif
 
+    /// The session closed. Stops output and SwiftTerm's display link, which
+    /// holds the view and would otherwise keep it alive.
     func detach() {
+        detached = true
         session.terminalOutput.setReadableHandler(nil)
         resizeTask?.cancel()
+        updateUiClosed()
     }
 
     // MARK: Output
 
     private func drain() {
-        guard !draining else { return }
+        guard !draining, !detached else { return }
         draining = true
         defer { draining = false }
         let started = Date()
         while Date().timeIntervalSince(started) < Self.drainBudget {
             let bytes = session.terminalOutput.drain(maximum: Self.drainChunk)
             if bytes.isEmpty { return }
+            feeding = true
             feed(byteArray: bytes[...])
+            feeding = false
         }
         // Over budget with output left: come back on the next turn.
         if !session.terminalOutput.isEmpty {
@@ -217,28 +235,43 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
         return modifiers
     }
 
-    private func sendToSession(_ data: ArraySlice<UInt8>) {
-        guard isInputEnabled else { return }
-        if !session.terminalInput.send(Array(data)) { onSendRefused() }
+    @discardableResult
+    private func sendToSession(_ data: ArraySlice<UInt8>, fromUser: Bool = true) -> Bool {
+        guard isInputEnabled || !fromUser else { return false }
+        if !session.terminalInput.send(Array(data)) {
+            onSendRefused()
+            return false
+        }
+        return true
     }
 
     /// docs/ssh-design.md 8.3: a multi-line paste into a program that did not
     /// ask for bracketed paste would run each line; confirm first.
     override func paste(_ sender: Any?) {
-        guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
+        guard clipboardPolicy.allowsSend,
+              let text = UIPasteboard.general.string, !text.isEmpty else { return }
         pasteText(text)
     }
 
+    /// The profile's clipboard policy covers copying out of the terminal.
+    override func copy(_ sender: Any?) {
+        guard clipboardPolicy.allowsReceive else { return }
+        super.copy(sender)
+    }
+
     func pasteText(_ text: String) {
+        guard clipboardPolicy.allowsSend else { return }
         let bracketed = getTerminal().bracketedPasteMode
         let send = { [weak self] in
             guard let self else { return }
             // In chunks: a large paste must not fill the input queue at once.
             let bytes = TerminalKeyEncoder.paste(text, bracketed: bracketed)
             var offset = 0
+            // Stops at the first refusal: a paste with a hole in it, or
+            // without its closing bracket, is worse than a short one.
             while offset < bytes.count {
                 let end = min(offset + 4096, bytes.count)
-                self.sendToSession(bytes[offset..<end])
+                guard self.sendToSession(bytes[offset..<end]) else { return }
                 offset = end
             }
         }
@@ -252,7 +285,7 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
     // MARK: TerminalViewDelegate
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        sendToSession(data)
+        sendToSession(data, fromUser: !feeding)
     }
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {

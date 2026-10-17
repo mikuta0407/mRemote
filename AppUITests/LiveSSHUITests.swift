@@ -102,7 +102,15 @@ final class LiveSSHUITests: XCTestCase {
             menuButton.tap()
             XCTAssertTrue(element("session-terminal-paste").waitForExistence(timeout: 5))
             shot("5-menu")
-            element("session-menu-close").tap()
+            // To the list and back: the same terminal, with what it showed.
+            element("session-return-to-list").tap()
+            let running = element("running-session-テスト SSH")
+            XCTAssertTrue(running.waitForExistence(timeout: 10))
+            running.tap()
+            XCTAssertTrue(element("terminal-surface").waitForExistence(timeout: 10))
+            XCTAssertTrue(waitForTerminal(containing: "after-ctrl-c-2", timeout: 5),
+                          "the terminal survives a trip to the list\n\(terminalText())")
+            element("terminal-surface").tap()
         }
 
         app.typeText("exit\n")

@@ -421,6 +421,8 @@ struct SessionWorkspaceView: View {
                 session: terminal,
                 settings: settings,
                 isInputEnabled: model.acceptsInput && scenePhase == .active,
+                clipboardPolicy: model.clipboardPolicy,
+                existing: model.terminalView,
                 onSendRefused: { model.terminalSendRefused() },
                 onPasteNeedsConfirmation: { text, proceed in model.confirmPaste(text, proceed: proceed) },
                 onOpenLink: { url in model.pendingLink = url },

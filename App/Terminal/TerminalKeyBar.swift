@@ -14,7 +14,7 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
     private let scrollView = KeyScrollView()
     private var keyButtons: [UIButton] = []
     private lazy var hideButton = key(nil, symbol: "keyboard.chevron.compact.down",
-                                      label: String(localized: "キーボードを閉じる")) { $0.resignFirstResponder() }
+                                      label: String(localized: "キーボードを閉じる")) { _ = $0.resignFirstResponder() }
     private var controlButton: UIButton?
     private var metaButton: UIButton?
     private var touchButton: UIButton?
@@ -42,6 +42,13 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
 
     @objc private func modifierReset(_ notification: Notification) {
         refreshModifiers()
+    }
+
+    /// A hold the touch never finished (the keyboard went away under it)
+    /// must not keep repeating.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { endHold() }
     }
 
     override var intrinsicContentSize: CGSize {
