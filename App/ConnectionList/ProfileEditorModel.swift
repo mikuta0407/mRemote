@@ -19,6 +19,30 @@ final class ProfileEditorModel: Identifiable {
 
     nonisolated let id = UUID()
 
+    /// RDP or SSH. Chosen when the profile is created; an existing profile
+    /// keeps its protocol (its settings would not carry over).
+    var protocolKind: ProtocolKind = .rdp {
+        didSet {
+            // A port left at the old protocol's default follows the new one.
+            if portText == String(oldValue.defaultPort) { portText = "" }
+        }
+    }
+    var canChangeProtocol: Bool { existing == nil && !isImport }
+
+    // SSH (docs/ssh-design.md 8.1).
+    var sshKeyID: SSHKeyID?
+    var sshAllowsKeyboardInteractive = true
+    var sshAllowsPassword = true
+    var startupCommand = ""
+    var terminalType = ""
+    var terminalFontSize: Inheritable<Double> = .inherit
+    var terminalTheme: Inheritable<TerminalTheme> = .inherit
+    var optionAsMeta: Inheritable<Bool> = .inherit
+    var keepAliveSeconds: Inheritable<Int> = .inherit
+    var shellExitBehavior: Inheritable<ShellExitBehavior> = .inherit
+    var sshReconnectPolicy: Inheritable<ReconnectPolicy> = .explicit(.disabled)
+    var portForwards: [SSHPortForward] = []
+
     var displayName: String
     var host: String
     var portText: String
@@ -101,9 +125,10 @@ final class ProfileEditorModel: Identifiable {
                 isImport = false
             }
             base = profile.configuration.rdp
+            protocolKind = profile.protocolKind
             displayName = profile.displayName
             host = profile.endpoint.host
-            portText = profile.endpoint.port == Self.defaultPort ? "" : String(profile.endpoint.port)
+            portText = profile.endpoint.port == profile.protocolKind.defaultPort ? "" : String(profile.endpoint.port)
             username = profile.account.username ?? ""
             domain = profile.account.domain ?? ""
             let rdp = profile.configuration.rdp ?? RDPConfiguration()
@@ -137,6 +162,21 @@ final class ProfileEditorModel: Identifiable {
                 gatewayDomain = gateway.account.domain ?? ""
                 gatewayBypassesLocal = gateway.bypassesLocalAddresses
             }
+            if let ssh = profile.configuration.ssh {
+                sshKeyID = ssh.authentication.keyID
+                sshAllowsKeyboardInteractive = ssh.authentication.allowsKeyboardInteractive
+                sshAllowsPassword = ssh.authentication.allowsPassword
+                startupCommand = ssh.startupCommand ?? ""
+                terminalType = ssh.terminalType ?? ""
+                terminalFontSize = ssh.fontSize
+                terminalTheme = ssh.theme
+                optionAsMeta = ssh.optionAsMeta
+                keepAliveSeconds = ssh.keepAliveSeconds
+                shellExitBehavior = ssh.exitBehavior
+                clipboardPolicy = ssh.clipboardPolicy
+                sshReconnectPolicy = ssh.reconnectPolicy
+                portForwards = ssh.portForwards ?? []
+            }
             if let folder = rdp.sharedFolder {
                 switch folder.location {
                 case .appDocuments: sharedFolder = .appDocuments
@@ -155,11 +195,12 @@ final class ProfileEditorModel: Identifiable {
             : isImport ? String(localized: "接続先を読み込む") : String(localized: "接続先を追加")
     }
 
-    /// What an empty port field means.
-    static let defaultPort: UInt16 = 3389
+    /// What an empty port field means: 3389, or 22 for SSH.
+    var defaultPort: UInt16 { protocolKind.defaultPort }
 
-    /// Nil only for something that is not a port; an empty field is 3389.
-    var port: UInt16? { Self.parsePort(portText, default: Self.defaultPort) }
+    /// Nil only for something that is not a port; an empty field is the
+    /// protocol's default.
+    var port: UInt16? { Self.parsePort(portText, default: defaultPort) }
 
     private static func parsePort(_ text: String, default fallback: UInt16) -> UInt16? {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
@@ -182,9 +223,19 @@ final class ProfileEditorModel: Identifiable {
     }
 
     var isValid: Bool {
-        !trimmedHost.isEmpty && port != nil
-            && (!usesGateway || (!trimmedGatewayHost.isEmpty && gatewayPort != nil))
-            && isWakeValid
+        guard !trimmedHost.isEmpty, port != nil, isWakeValid else { return false }
+        switch protocolKind {
+        case .rdp:
+            return !usesGateway || (!trimmedGatewayHost.isEmpty && gatewayPort != nil)
+        case .ssh:
+            return portForwards.allSatisfy { $0.localPort > 0 && $0.remotePort > 0 && !$0.remoteHost.isEmpty }
+        }
+    }
+
+    /// An SSH profile with no key and both typed methods turned off could
+    /// never sign in.
+    var showsNoSignInMethodWarning: Bool {
+        protocolKind == .ssh && sshKeyID == nil && !sshAllowsPassword && !sshAllowsKeyboardInteractive
     }
 
     /// The Eisu/Kana promise only holds for the Japanese layout, so the form
@@ -225,8 +276,45 @@ final class ProfileEditorModel: Identifiable {
         return trimmed.isEmpty ? trimmedHost : trimmed
     }
 
+    private func makeSSHConfiguration() -> SSHConfiguration {
+        var ssh = existing?.configuration.ssh ?? SSHConfiguration()
+        ssh.authentication = SSHAuthentication(
+            keyID: sshKeyID,
+            allowsKeyboardInteractive: sshAllowsKeyboardInteractive,
+            allowsPassword: sshAllowsPassword)
+        let command = startupCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        ssh.startupCommand = command.isEmpty ? nil : command
+        let term = terminalType.trimmingCharacters(in: .whitespaces)
+        ssh.terminalType = term.isEmpty ? nil : term
+        ssh.fontSize = terminalFontSize
+        ssh.theme = terminalTheme
+        ssh.optionAsMeta = optionAsMeta
+        ssh.keepAliveSeconds = keepAliveSeconds
+        ssh.exitBehavior = shellExitBehavior
+        ssh.clipboardPolicy = clipboardPolicy
+        ssh.reconnectPolicy = sshReconnectPolicy
+        ssh.portForwards = portForwards.isEmpty ? nil : portForwards
+        return ssh
+    }
+
     func makeProfile(now: Date = Date()) -> ConnectionProfile? {
         guard let port else { return nil }
+        if protocolKind == .ssh {
+            var profile = existing ?? ConnectionProfile(
+                displayName: resolvedDisplayName,
+                endpoint: RemoteEndpoint(host: trimmedHost, port: port),
+                createdAt: now,
+                updatedAt: now
+            )
+            profile.displayName = resolvedDisplayName
+            profile.endpoint = RemoteEndpoint(host: trimmedHost, port: port)
+            let user = username.trimmingCharacters(in: .whitespaces)
+            profile.account.username = user.isEmpty ? nil : user
+            profile.account.domain = nil
+            profile.configuration = .ssh(makeSSHConfiguration())
+            applyCommon(to: &profile, now: now)
+            return profile
+        }
         // Built on what was there, so a field the form does not show is
         // kept rather than reset to inherit.
         var configuration = existing?.configuration.rdp ?? base ?? RDPConfiguration()
@@ -279,6 +367,12 @@ final class ProfileEditorModel: Identifiable {
         profile.account.username = username.isEmpty ? nil : username
         profile.account.domain = domain.isEmpty ? nil : domain
         profile.configuration = .rdp(configuration)
+        applyCommon(to: &profile, now: now)
+        return profile
+    }
+
+    /// What RDP and SSH profiles share past the endpoint and account.
+    private func applyCommon(to profile: inout ConnectionProfile, now: Date) {
         profile.group = group.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : group
         profile.isFavorite = isFavorite
         profile.wakeOnLAN = wakesOnLAN
@@ -290,6 +384,5 @@ final class ProfileEditorModel: Identifiable {
             )
             : nil
         profile.updatedAt = now
-        return profile
     }
 }

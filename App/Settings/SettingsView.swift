@@ -91,6 +91,33 @@ struct SettingsView: View {
                     }
                 }
 
+                Section {
+                    Picker("文字の大きさ", selection: $settings.terminal.fontSize) {
+                        ForEach([10.0, 11, 12, 13, 14, 15, 16, 18, 20, 24], id: \.self) { size in
+                            Text(String(format: "%.0f pt", size)).tag(size)
+                        }
+                    }
+                    Picker("配色", selection: $settings.terminal.theme) {
+                        ForEach(TerminalTheme.allCases, id: \.self) { theme in
+                            Text(Formatting.terminalThemeLabel(theme)).tag(theme)
+                        }
+                    }
+                    Toggle("Option キーを Meta として送る", isOn: $settings.terminal.optionAsMeta)
+                    Picker("シェルが終了したら", selection: $settings.terminal.exitBehavior) {
+                        ForEach(ShellExitBehavior.allCases, id: \.self) { behavior in
+                            Text(Formatting.shellExitLabel(behavior)).tag(behavior)
+                        }
+                    }
+                    NavigationLink("SSH の鍵") { SSHKeysView() }
+                        .accessibilityIdentifier("settings-ssh-keys")
+                    NavigationLink("既知のホスト鍵") { KnownHostsView() }
+                        .accessibilityIdentifier("settings-known-hosts")
+                } header: {
+                    Text("SSH")
+                } footer: {
+                    Text("SSH の接続先が「全体設定に従う」ときに使う値です。")
+                }
+
                 Section("診断") {
                     NavigationLink("入力診断") {
                         InputDiagnosticsView()

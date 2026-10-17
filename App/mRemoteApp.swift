@@ -128,6 +128,26 @@ private struct SessionCommands: View {
         Button("セッションのメニュー…") { session?.isMenuPresented = true }
             .disabled(session == nil)
         Divider()
+        if let session, session.terminal != nil {
+            terminalCommands(session)
+        } else {
+            desktopCommands
+        }
+        Divider()
+        Button("再接続") {
+            guard let session else { return }
+            Task { await session.reconnect() }
+        }
+        .disabled(session.map { !($0.canRetry || $0.state == .disconnected) } ?? true)
+        Button("切断") {
+            guard let session else { return }
+            Task { await session.disconnect() }
+        }
+        .disabled(session == nil)
+    }
+
+    @ViewBuilder
+    private var desktopCommands: some View {
         Menu("ショートカットを送る") {
             ForEach(shortcuts.shortcuts) { shortcut in
                 Button(shortcut.displayTitle) {
@@ -156,16 +176,19 @@ private struct SessionCommands: View {
                 }
             }
         }
-        Divider()
-        Button("再接続") {
-            guard let session else { return }
-            Task { await session.reconnect() }
-        }
-        .disabled(session.map { !($0.canRetry || $0.state == .disconnected) } ?? true)
-        Button("切断") {
-            guard let session else { return }
-            Task { await session.disconnect() }
-        }
-        .disabled(session == nil)
+    }
+
+    /// An SSH session's terminal: ⌘ stays with the Mac here, so these keep
+    /// the shortcuts Terminal.app has (docs/ssh-design.md 8.3).
+    @ViewBuilder
+    private func terminalCommands(_ session: SessionWorkspaceModel) -> some View {
+        Button("文字を大きく") { session.terminalView?.adjustFontSize(by: 1) }
+            .keyboardShortcut("+", modifiers: .command)
+        Button("文字を小さく") { session.terminalView?.adjustFontSize(by: -1) }
+            .keyboardShortcut("-", modifiers: .command)
+        Button("文字の大きさを標準に") { session.terminalView?.resetFontSize() }
+            .keyboardShortcut("0", modifiers: .command)
+        Button("スクロールバックを消去") { session.terminalView?.clearLocalScrollback() }
+            .keyboardShortcut("k", modifiers: .command)
     }
 }

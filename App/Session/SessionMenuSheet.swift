@@ -151,6 +151,9 @@ struct SessionMenuSheet: View {
                     }
                 }
 
+                if model.terminal != nil {
+                    terminalSection
+                } else {
                 Section {
                     Button {
                         model.showSoftwareKeyboard()
@@ -437,6 +440,7 @@ struct SessionMenuSheet: View {
                     }
                 }
 
+                }
             }
             .navigationTitle("セッション")
             // The display channel opens after the session is connected, so
@@ -466,6 +470,49 @@ struct SessionMenuSheet: View {
 }
 
 extension SessionMenuSheet {
+    /// An SSH session's own commands (docs/ssh-design.md 8.2): the desktop's
+    /// keyboard, display and audio settings mean nothing to a terminal.
+    var terminalSection: some View {
+        Group {
+            Section {
+                Button {
+                    dismiss()
+                    model.toggleTerminalKeyboard()
+                } label: {
+                    Label("キーボード", systemImage: "keyboard")
+                }
+                .disabled(!model.state.acceptsInput)
+                Button {
+                    dismiss()
+                    model.pasteIntoTerminal()
+                } label: {
+                    Label("貼り付け", systemImage: "doc.on.clipboard")
+                }
+                .disabled(!model.state.acceptsInput || !model.clipboardPolicy.allowsSend)
+                .accessibilityIdentifier("session-terminal-paste")
+            }
+            Section("表示") {
+                HStack {
+                    Text("文字の大きさ")
+                    Spacer()
+                    Button { model.terminalView?.adjustFontSize(by: -1) } label: { Image(systemName: "textformat.size.smaller") }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("小さく")
+                    Button("標準") { model.terminalView?.resetFontSize() }
+                        .buttonStyle(.bordered)
+                    Button { model.terminalView?.adjustFontSize(by: 1) } label: { Image(systemName: "textformat.size.larger") }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("大きく")
+                }
+                Button {
+                    model.terminalView?.clearLocalScrollback()
+                } label: {
+                    Label("スクロールバックを消去", systemImage: "eraser")
+                }
+            }
+        }
+    }
+
     /// A Mac server's extensions: what is in use, and the stream quality,
     /// which can change mid-session (say, moving from Wi-Fi to cellular).
     @ViewBuilder

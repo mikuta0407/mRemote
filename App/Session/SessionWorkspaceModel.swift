@@ -380,6 +380,9 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
             // Shown instead of an error; the state is already on its way to
             // disconnected, which never reconnects on its own.
             endReason = reason
+            if case .shellExited = reason, configuration.ssh?.exitBehavior == .closeSession {
+                await disconnect()
+            }
         case .clipboardChanged(let hasRemoteText):
             remoteHasText = hasRemoteText
             // A new remote copy: whatever was received before is no longer

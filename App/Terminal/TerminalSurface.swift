@@ -84,6 +84,14 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    #if DEBUG
+    /// What the terminal holds, for UI tests against a live host.
+    override var accessibilityValue: String? {
+        get { String(String(decoding: getTerminal().getBufferAsData(), as: UTF8.self).suffix(4000)) }
+        set {}
+    }
+    #endif
+
     func detach() {
         session.terminalOutput.setReadableHandler(nil)
         resizeTask?.cancel()

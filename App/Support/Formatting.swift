@@ -7,6 +7,12 @@ enum Formatting {
     }
 
     static func subtitle(for profile: ConnectionProfile) -> String {
+        if profile.protocolKind == .ssh {
+            let host = profile.endpoint.port == SSHConfiguration.defaultPort
+                ? profile.endpoint.host : "\(profile.endpoint.host):\(profile.endpoint.port)"
+            let user = profile.account.username.map { $0.isEmpty ? "" : "\($0)@" } ?? ""
+            return "SSH ・ \(user)\(host)"
+        }
         guard let username = profile.account.username, !username.isEmpty else {
             return endpoint(profile.endpoint)
         }
@@ -52,6 +58,31 @@ enum Formatting {
         kbps >= 1_000
             ? String(format: "%.1f Mbps", Double(kbps) / 1_000)
             : "\(kbps) kbps"
+    }
+
+    static func terminalThemeLabel(_ theme: TerminalTheme) -> String {
+        switch theme {
+        case .system: return String(localized: "システムに合わせる")
+        case .light: return String(localized: "ライト")
+        case .dark: return String(localized: "ダーク")
+        case .solarizedDark: return "Solarized Dark"
+        }
+    }
+
+    static func shellExitLabel(_ behavior: ShellExitBehavior) -> String {
+        switch behavior {
+        case .keepScreen: return String(localized: "画面を残す")
+        case .closeSession: return String(localized: "セッションを閉じる")
+        }
+    }
+
+    static func clipboardLabel(_ value: ClipboardPolicy) -> String {
+        switch value {
+        case .disabled: return String(localized: "無効")
+        case .bidirectional: return String(localized: "双方向")
+        case .sendOnly: return String(localized: "送信のみ")
+        case .receiveOnly: return String(localized: "受信のみ")
+        }
     }
 
     static func transportLabel(_ security: TransportSecurity) -> String {

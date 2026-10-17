@@ -61,6 +61,7 @@ final class AppEnvironment {
 
     private let logger = AppLog.logger(.app)
     @ObservationIgnored private var memoryWarningObserver: NSObjectProtocol?
+    @ObservationIgnored private var backgroundGrace: BackgroundGrace?
 
     init(
         store: any ProfileStore,
@@ -77,6 +78,10 @@ final class AppEnvironment {
         self.sshKeys = sshKeys
         self.factories = factories
         self.sessions = SessionManager()
+        backgroundGrace = BackgroundGrace { [weak self] in
+            guard let self else { return false }
+            return self.runningSessions.contains { $0.state.isActive } || self.presentedSession?.state.isActive == true
+        }
         memoryWarningObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil,

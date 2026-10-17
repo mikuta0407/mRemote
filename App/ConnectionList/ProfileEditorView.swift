@@ -25,6 +25,16 @@ struct ProfileEditorView: View {
                     .font(.footnote)
                     .accessibilityIdentifier("profile-import-note")
                 }
+                if model.canChangeProtocol {
+                    Section {
+                        Picker("種類", selection: $model.protocolKind) {
+                            Text(verbatim: "RDP").tag(ProtocolKind.rdp)
+                            Text(verbatim: "SSH").tag(ProtocolKind.ssh)
+                        }
+                        .pickerStyle(.segmented)
+                        .accessibilityIdentifier("profile-protocol-picker")
+                    }
+                }
                 Section(String(localized: "profile-editor.section.computer", defaultValue: "接続先")) {
                     TextField("名前", text: $model.displayName)
                         .accessibilityIdentifier("profile-name-field")
@@ -33,7 +43,7 @@ struct ProfileEditorView: View {
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("profile-host-field")
                     LabeledContent("ポート") {
-                        TextField("ポート", text: $model.portText, prompt: Text(verbatim: "3389"))
+                        TextField("ポート", text: $model.portText, prompt: Text(verbatim: String(model.defaultPort)))
                             .multilineTextAlignment(.trailing)
                             .keyboardType(.numberPad)
                             .accessibilityIdentifier("profile-port-field")
@@ -47,6 +57,9 @@ struct ProfileEditorView: View {
                         .accessibilityIdentifier("profile-favorite-toggle")
                 }
 
+                if model.protocolKind == .ssh {
+                    SSHProfileSections(model: model)
+                } else {
                 Section("資格情報") {
                     TextField("ユーザー名", text: $model.username)
                         .textInputAutocapitalization(.never)
@@ -118,7 +131,6 @@ struct ProfileEditorView: View {
                     }
                 }
 
-                wakeSection
                 gatewaySection
                 Section {
                     Picker("接続先", selection: $model.remotePlatform) {
@@ -190,6 +202,8 @@ struct ProfileEditorView: View {
                         label: { $0 == .normal ? String(localized: "通常") : String(localized: "反転") }
                     )
                 }
+                }
+                wakeSection
             }
             .navigationTitle(model.title)
             .navigationBarTitleDisplayMode(.inline)
