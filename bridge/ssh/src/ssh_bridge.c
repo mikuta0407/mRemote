@@ -110,6 +110,9 @@ struct mr_ssh_session {
     size_t held_length;
     size_t held_offset;
     int kbd_cancelled;
+    /* The keyboard-interactive call's deadline, restarted after each round
+     * the user answers: their think time does not count against it. */
+    int64_t kbd_deadline;
 };
 
 static pthread_once_t g_libssh2_once = PTHREAD_ONCE_INIT;
@@ -130,6 +133,40 @@ static void wipe(void *bytes, size_t length) {
 static void wipe_free(void *bytes, size_t length) {
     wipe(bytes, length);
     free(bytes);
+}
+
+/* libssh2's allocator: what it frees is wiped first. Keyboard-interactive
+ * answers are handed to it to free, and its packet buffers hold passwords.
+ * Each block keeps its size in a header that preserves malloc's alignment. */
+#define ALLOC_HEADER 16u
+
+static LIBSSH2_ALLOC_FUNC(wiping_alloc) {
+    (void)abstract;
+    if (count > SIZE_MAX - ALLOC_HEADER) return NULL;
+    uint8_t *block = malloc(ALLOC_HEADER + count);
+    if (!block) return NULL;
+    memcpy(block, &count, sizeof count);
+    return block + ALLOC_HEADER;
+}
+
+static LIBSSH2_FREE_FUNC(wiping_free) {
+    (void)abstract;
+    if (!ptr) return;
+    uint8_t *block = (uint8_t *)ptr - ALLOC_HEADER;
+    size_t count;
+    memcpy(&count, block, sizeof count);
+    wipe_free(block, ALLOC_HEADER + count);
+}
+
+static LIBSSH2_REALLOC_FUNC(wiping_realloc) {
+    if (!ptr) return wiping_alloc(count, abstract);
+    size_t old;
+    memcpy(&old, (uint8_t *)ptr - ALLOC_HEADER, sizeof old);
+    void *grown = wiping_alloc(count, abstract);
+    if (!grown) return NULL;
+    memcpy(grown, ptr, old < count ? old : count);
+    wiping_free(ptr, abstract);
+    return grown;
 }
 
 static char *copy_string(const char *source, size_t limit) {
@@ -468,6 +505,15 @@ static int set_nonblocking(int fd) {
     return flags < 0 ? -1 : fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+/* The strings create copied. */
+static void free_copies(mr_ssh_session *s) {
+    for (size_t i = 0; i < s->forward_count; i++) free((char *)s->forwards[i].remote_host);
+    free(s->forwards);
+    free(s->host);
+    free(s->username);
+    free(s->term);
+}
+
 mr_ssh_status mr_ssh_session_create(
     const mr_ssh_config *config, const mr_ssh_callbacks *callbacks, void *context,
     mr_ssh_session **out_session) {
@@ -507,9 +553,7 @@ mr_ssh_status mr_ssh_session_create(
     s->username = copy_string(config->username, MR_SSH_MAX_USERNAME_BYTES);
     s->term = copy_string(config->term ? config->term : "xterm-256color", MR_SSH_MAX_TERM_BYTES);
     if (!s->host || !s->username || !s->term) {
-        free(s->host);
-        free(s->username);
-        free(s->term);
+        free_copies(s);
         free(s);
         return MR_SSH_ERROR_INVALID_ARGUMENT;
     }
@@ -526,26 +570,28 @@ mr_ssh_status mr_ssh_session_create(
     if (config->forward_count) {
         s->forwards = calloc(config->forward_count, sizeof *s->forwards);
         if (!s->forwards) {
-            free(s->host);
-            free(s->username);
-            free(s->term);
+            free_copies(s);
             free(s);
             return MR_SSH_ERROR_OUT_OF_MEMORY;
         }
+        s->forward_count = config->forward_count;
         for (size_t i = 0; i < config->forward_count; i++) {
             s->forwards[i] = config->forwards[i];
+            /* Checked above, so NULL here means out of memory. */
             s->forwards[i].remote_host = copy_string(config->forwards[i].remote_host, MR_SSH_MAX_HOST_BYTES);
+            if (!s->forwards[i].remote_host) {
+                free_copies(s);
+                free(s);
+                return MR_SSH_ERROR_OUT_OF_MEMORY;
+            }
         }
-        s->forward_count = config->forward_count;
     }
 
     if (pipe(s->wake_pipe) != 0 || set_nonblocking(s->wake_pipe[0]) != 0 ||
         set_nonblocking(s->wake_pipe[1]) != 0) {
         if (s->wake_pipe[0] >= 0) close(s->wake_pipe[0]);
         if (s->wake_pipe[1] >= 0) close(s->wake_pipe[1]);
-        free(s->host);
-        free(s->username);
-        free(s->term);
+        free_copies(s);
         free(s);
         return MR_SSH_ERROR_OUT_OF_MEMORY;
     }
@@ -577,11 +623,7 @@ mr_ssh_status mr_ssh_session_destroy(mr_ssh_session *s) {
     close(s->wake_pipe[1]);
     pthread_mutex_destroy(&s->lock);
     pthread_cond_destroy(&s->cond);
-    for (size_t i = 0; i < s->forward_count; i++) free((char *)s->forwards[i].remote_host);
-    free(s->forwards);
-    free(s->host);
-    free(s->username);
-    free(s->term);
+    free_copies(s);
     free(s);
     return MR_SSH_STATUS_OK;
 }
@@ -661,6 +703,9 @@ static int connect_socket(mr_ssh_session *s, mr_ssh_failure *failure, int32_t *d
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
     struct addrinfo *results = NULL;
+    /* Blocks, and a stop cannot interrupt it: it is noticed once the
+     * resolver returns, which its own timeouts bound. Until then destroy
+     * waits too. */
     int gai = getaddrinfo(s->host, port, &hints, &results);
     if (stop_requested(s)) {
         if (results) freeaddrinfo(results);
@@ -815,9 +860,12 @@ static mr_ssh_auth_method parse_methods(const char *list) {
 }
 
 
+static int64_t step_deadline(void) { return now_ms() + MR_SSH_CHALLENGE_TIMEOUT_MS; }
+
 /* libssh2 calls this from inside libssh2_userauth_keyboard_interactive_ex, on
  * the run thread, once per round of prompts. It blocks on the user. The
- * responses' text must come from the session allocator, which is malloc. */
+ * responses' text must come from the session allocator, wiping_alloc, which
+ * libssh2 frees it with - wiped. */
 static LIBSSH2_USERAUTH_KBDINT_RESPONSE_FUNC(kbd_callback) {
     mr_ssh_session *s = *abstract;
     size_t count = num_prompts > 0 ? (size_t)num_prompts : 0;
@@ -848,8 +896,9 @@ static LIBSSH2_USERAUTH_KBDINT_RESPONSE_FUNC(kbd_callback) {
         clear_answer(&answer);
         return;
     }
+    s->kbd_deadline = step_deadline();
     for (size_t i = 0; i < count && i < answer.kbd_count; i++) {
-        char *text = malloc(answer.kbd_lengths[i] ? answer.kbd_lengths[i] : 1);
+        char *text = wiping_alloc(answer.kbd_lengths[i] ? answer.kbd_lengths[i] : 1, abstract);
         if (!text) break;
         if (answer.kbd_lengths[i]) memcpy(text, answer.kbd_answers[i], answer.kbd_lengths[i]);
         responses[i].text = text;
@@ -857,8 +906,6 @@ static LIBSSH2_USERAUTH_KBDINT_RESPONSE_FUNC(kbd_callback) {
     }
     clear_answer(&answer);
 }
-
-static int64_t step_deadline(void) { return now_ms() + MR_SSH_CHALLENGE_TIMEOUT_MS; }
 
 /* Returns 0 once signed in, or -1 with failure and detail set. */
 static int authenticate(mr_ssh_session *s, mr_ssh_failure *failure, int32_t *detail) {
@@ -922,7 +969,8 @@ static int authenticate(mr_ssh_session *s, mr_ssh_failure *failure, int32_t *det
             break;
         case MR_SSH_AUTH_KEYBOARD_INTERACTIVE:
             s->kbd_cancelled = 0;
-            SSH_RETRY(s, rc, deadline,
+            s->kbd_deadline = deadline;
+            SSH_RETRY(s, rc, s->kbd_deadline,
                       libssh2_userauth_keyboard_interactive_ex(s->ssh, s->username, username_length,
                                                               kbd_callback));
             break;
@@ -1019,13 +1067,20 @@ static void run_shell(mr_ssh_session *s) {
     s->held_output = malloc(READ_CHUNK);
     if (!buffer || !s->held_output) {
         free(buffer);
+        free(s->held_output);
+        s->held_output = NULL;
         report_state(s, MR_SSH_STATE_FAILED, MR_SSH_FAILURE_INTERNAL, 0);
         return;
     }
     if (s->keepalive_seconds) libssh2_keepalive_config(s->ssh, 1, s->keepalive_seconds);
-    mr_forwarder *forwarder = s->forward_count
-        ? mr_forwarder_create(s->ssh, s->forwards, s->forward_count, report_forward, s)
-        : NULL;
+    mr_forwarder *forwarder = NULL;
+    if (s->forward_count) {
+        forwarder = mr_forwarder_create(s->ssh, s->forwards, s->forward_count, report_forward, s);
+        /* Out of memory: the shell goes on without them. */
+        if (!forwarder) {
+            for (size_t i = 0; i < s->forward_count; i++) report_forward(s, i, ENOMEM);
+        }
+    }
 
     int paused = 0;
     for (;;) {
@@ -1043,15 +1098,26 @@ static void run_shell(mr_ssh_session *s) {
         pthread_mutex_unlock(&s->lock);
         if (paused && resume && deliver_held(s)) paused = 0;
 
+        /* A send that would block waits on the socket's POLLOUT only when it
+         * is the socket it waits for, as libssh2 says right after the EAGAIN:
+         * a write whose window is used up waits for inbound data, and polling
+         * POLLOUT on a writable socket would spin. Saying it later is not
+         * enough, since later calls overwrite those directions. */
         int fatal = 0;
         int resize_blocked = 0;
+        int want_pollout = 0;
         if (resize) {
             int rc = libssh2_channel_request_pty_size_ex(s->channel, columns, rows, pw, ph);
             resize_blocked = rc == LIBSSH2_ERROR_EAGAIN;
-            if (!resize_blocked) {
+            if (resize_blocked) {
+                if (libssh2_session_block_directions(s->ssh) & LIBSSH2_SESSION_BLOCK_OUTBOUND) want_pollout = 1;
+            } else {
                 pthread_mutex_lock(&s->lock);
                 /* Only if no newer size came in meanwhile. */
-                if (s->columns == columns && s->rows == rows) s->resize_pending = 0;
+                if (s->columns == columns && s->rows == rows && s->pixel_width == pw &&
+                    s->pixel_height == ph) {
+                    s->resize_pending = 0;
+                }
                 pthread_mutex_unlock(&s->lock);
             }
         }
@@ -1067,8 +1133,10 @@ static void run_shell(mr_ssh_session *s) {
             if (!length) break;
             ssize_t n = libssh2_channel_write_ex(s->channel, 0, (const char *)chunk, length);
             wipe(chunk, length);
-            if (n == LIBSSH2_ERROR_EAGAIN) {
+            /* 0: the window is used up. */
+            if (n == LIBSSH2_ERROR_EAGAIN || n == 0) {
                 want_write = 1;
+                if (libssh2_session_block_directions(s->ssh) & LIBSSH2_SESSION_BLOCK_OUTBOUND) want_pollout = 1;
                 break;
             }
             if (n < 0) {
@@ -1097,6 +1165,19 @@ static void run_shell(mr_ssh_session *s) {
             s->held_length = (size_t)n;
             s->held_offset = 0;
             if (!deliver_held(s)) paused = 1;
+        }
+        /* While paused the transport is still read, without taking the
+         * shell's data: a read of 0 bytes. Forwards and keepalive replies
+         * keep moving, a hang-up is noticed, and the socket does not stay
+         * readable, which would make poll spin. What arrives for the shell
+         * queues inside libssh2, bounded by the window, which grows back
+         * only by what the caller has taken. */
+        if (paused && !fatal) {
+            ssize_t n = libssh2_channel_read_ex(s->channel, 0, (char *)buffer, 0);
+            if (n < 0 && n != LIBSSH2_ERROR_EAGAIN) {
+                report_state(s, MR_SSH_STATE_FAILED, failure_for_libssh2((int)n), (int32_t)n);
+                fatal = 1;
+            }
         }
         if (fatal) break;
 
@@ -1136,9 +1217,9 @@ static void run_shell(mr_ssh_session *s) {
         pthread_mutex_unlock(&s->lock);
         if (more || forwarded > 0) continue;
 
-        short extra = paused ? 0 : POLLIN;
-        if (want_write) extra |= POLLOUT;
-        if (resize_blocked) extra |= POLLOUT;
+        /* Always readable: paused or not, the loop reads whatever arrives. */
+        short extra = POLLIN;
+        if (want_pollout || mr_forwarder_wants_write(forwarder)) extra |= POLLOUT;
         if (wait_io(s, extra, timeout_ms, forwarder) < 0) continue;  /* the loop reports the stop */
     }
     mr_forwarder_destroy(forwarder);
@@ -1151,10 +1232,6 @@ static void close_connection(mr_ssh_session *s) {
     if (s->ssh) {
         int64_t deadline = now_ms() + CLOSE_TIMEOUT_MS;
         int rc;
-        if (s->channel) {
-            libssh2_channel_free(s->channel);
-            s->channel = NULL;
-        }
         /* Best effort and bounded: the server may already be gone. A stop
          * request must not make this spin, so wait directly. */
         for (;;) {
@@ -1164,6 +1241,15 @@ static void close_connection(mr_ssh_session *s) {
             if (left <= 0) break;
             struct pollfd fd = { .fd = s->socket_fd, .events = POLLOUT, .revents = 0 };
             poll(&fd, 1, (int)left);
+        }
+        /* With the socket shut, closing a channel still open - the shell
+         * after a stop, a forward - fails at once instead of waiting for the
+         * server, so the frees below finish: in non-blocking mode an EAGAIN
+         * from libssh2_session_free would leak the session. */
+        if (s->socket_fd >= 0) shutdown(s->socket_fd, SHUT_RDWR);
+        if (s->channel) {
+            libssh2_channel_free(s->channel);
+            s->channel = NULL;
         }
         libssh2_session_free(s->ssh);
         s->ssh = NULL;
@@ -1196,7 +1282,7 @@ mr_ssh_status mr_ssh_session_run(mr_ssh_session *s) {
     }
     if (connect_socket(s, &failure, &detail) != 0) goto failed;
 
-    s->ssh = libssh2_session_init_ex(NULL, NULL, NULL, s);
+    s->ssh = libssh2_session_init_ex(wiping_alloc, wiping_free, wiping_realloc, s);
     if (!s->ssh || set_preferences(s->ssh) != 0) {
         failure = MR_SSH_FAILURE_INTERNAL;
         goto failed;

@@ -35,6 +35,13 @@ size_t mr_forwarder_max_fds(const mr_forwarder *forwarder);
  * or a negative libssh2 error that ends the whole session. */
 int mr_forwarder_step(mr_forwarder *forwarder);
 
+/* Nonzero when the last step left a send waiting for the SSH socket to
+ * drain: poll it for POLLOUT. libssh2_session_block_directions alone can
+ * lose that, since a later write that finds its window used up overwrites
+ * it with "inbound". */
+int mr_forwarder_wants_write(const mr_forwarder *forwarder);
+
+/* Channels still open are left to libssh2_session_free. */
 void mr_forwarder_destroy(mr_forwarder *forwarder);
 
 #endif

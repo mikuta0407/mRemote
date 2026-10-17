@@ -10,7 +10,9 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <pthread.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -66,6 +68,9 @@ typedef struct {
      * and refuse all while `blocked`. */
     int blocked;
     size_t refused_calls;
+    /* While set, on_output holds the run thread (setting `stalled`). */
+    int stall;
+    int stalled;
 } harness;
 
 static char *read_file(const char *name, size_t *length) {
@@ -160,6 +165,11 @@ static void on_auth_request(void *context, uint64_t id, const mr_ssh_auth_reques
 static size_t on_output(void *context, const uint8_t *bytes, size_t length) {
     harness *h = context;
     pthread_mutex_lock(&h->lock);
+    while (h->stall) {
+        h->stalled = 1;
+        pthread_cond_broadcast(&h->cond);
+        pthread_cond_wait(&h->cond, &h->lock);
+    }
     if (h->blocked) {
         h->refused_calls++;
         pthread_mutex_unlock(&h->lock);
@@ -230,6 +240,14 @@ static void harness_start_with(harness *h, plan_kind plan, const char *key, uint
     };
     mr_ssh_status status = mr_ssh_session_create(&config, &callbacks, h, &h->session);
     CHECK(status == MR_SSH_STATUS_OK, "create=%d", status);
+}
+
+/* CPU time this process has used, in seconds. */
+static double cpu_seconds(void) {
+    struct rusage usage;
+    getrusage(RUSAGE_SELF, &usage);
+    return (double)usage.ru_utime.tv_sec + usage.ru_utime.tv_usec / 1e6 +
+           (double)usage.ru_stime.tv_sec + usage.ru_stime.tv_usec / 1e6;
 }
 
 static void deadline_in(struct timespec *ts, int seconds) {
@@ -401,7 +419,12 @@ static void test_refused_output_is_held_not_lost(void) {
     char command[128];
     snprintf(command, sizeof command, "head -c %zu /dev/zero | tr '\\0' a; echo; echo end-$((3+3)); exit\n", total);
     write_text(&h, command);
-    sleep(2);
+    sleep(1);
+    /* Paused, the run thread must sleep, not spin on a readable socket. */
+    double cpu = cpu_seconds();
+    sleep(1);
+    cpu = cpu_seconds() - cpu;
+    CHECK(cpu < 0.3, "%.2f s of CPU in a second while paused", cpu);
     pthread_mutex_lock(&h.lock);
     size_t refused = h.refused_calls;
     h.blocked = 0;
@@ -429,10 +452,23 @@ static void test_refused_output_is_held_not_lost(void) {
 typedef struct {
     int listener;
     uint16_t port;
+    /* Sent first on each connection when nonzero, to tell servers apart. */
+    char tag;
 } echo_server;
 
+typedef struct {
+    int fd;
+    char tag;
+} echo_client;
+
 static void *echo_connection(void *argument) {
-    int fd = (int)(intptr_t)argument;
+    echo_client client = *(echo_client *)argument;
+    free(argument);
+    int fd = client.fd;
+    if (client.tag && write(fd, &client.tag, 1) != 1) {
+        close(fd);
+        return NULL;
+    }
     {
         char buffer[16384];
         ssize_t n;
@@ -455,8 +491,11 @@ static void *echo_thread(void *argument) {
     for (;;) {
         int fd = accept(server->listener, NULL, NULL);
         if (fd < 0) return NULL;
+        echo_client *client = malloc(sizeof *client);
+        client->fd = fd;
+        client->tag = server->tag;
         pthread_t thread;
-        pthread_create(&thread, NULL, echo_connection, (void *)(intptr_t)fd);
+        pthread_create(&thread, NULL, echo_connection, client);
         pthread_detach(thread);
     }
 }
@@ -562,6 +601,215 @@ static void test_a_local_forward_carries_data_both_ways(void) {
     pthread_join(echo, NULL);
 }
 
+static uint16_t free_port(void) {
+    int probe = listen_loopback(0);
+    uint16_t port = bound_port(probe);
+    close(probe);
+    return port;
+}
+
+static void stop_echo_server(echo_server *server, pthread_t thread) {
+    shutdown(server->listener, SHUT_RDWR);
+    close(server->listener);
+    pthread_join(thread, NULL);
+}
+
+/* Channels opening at the same time through different forwards each reach
+ * their own destination: libssh2 keeps one open in flight per session. */
+static void test_concurrent_opens_reach_their_own_destinations(void) {
+    printf("concurrent forwards to different destinations\n");
+    echo_server x = { .listener = listen_loopback(0), .tag = 'X' };
+    echo_server y = { .listener = listen_loopback(0), .tag = 'Y' };
+    x.port = bound_port(x.listener);
+    y.port = bound_port(y.listener);
+    pthread_t x_thread, y_thread;
+    pthread_create(&x_thread, NULL, echo_thread, &x);
+    pthread_create(&y_thread, NULL, echo_thread, &y);
+    uint16_t local_x = free_port(), local_y = free_port();
+    mr_ssh_forward forwards[2] = {
+        { .local_port = local_x, .remote_host = "127.0.0.1", .remote_port = x.port },
+        { .local_port = local_y, .remote_host = "127.0.0.1", .remote_port = y.port },
+    };
+    harness h;
+    harness_start_with(&h, PLAN_KEY, "user_ed25519", g_port, forwards, 2);
+    pthread_t thread;
+    pthread_create(&thread, NULL, run_thread, &h);
+    write_text(&h, "echo pair-$((2+5))\n");
+    CHECK(wait_for(&h, "pair-7", 15), "not connected");
+
+    /* Within the listen queues (8 each), all connected before any is read. */
+    enum { PAIRS = 8 };
+    for (int round = 0; round < 3; round++) {
+        int fds[2 * PAIRS];
+        for (int i = 0; i < PAIRS; i++) {
+            fds[2 * i] = connect_loopback(local_x);
+            fds[2 * i + 1] = connect_loopback(local_y);
+        }
+        int wrong = 0;
+        for (int i = 0; i < 2 * PAIRS; i++) {
+            char tag = 0;
+            if (fds[i] < 0 || read(fds[i], &tag, 1) != 1) {
+                CHECK(0, "connection %d got nothing", i);
+                continue;
+            }
+            if (tag != (i % 2 ? 'Y' : 'X')) wrong++;
+        }
+        CHECK(wrong == 0, "%d connection(s) reached the other destination", wrong);
+        for (int i = 0; i < 2 * PAIRS; i++) {
+            if (fds[i] >= 0) close(fds[i]);
+        }
+    }
+
+    write_text(&h, "exit\n");
+    wait_for(&h, NULL, 15);
+    harness_finish(&h, thread);
+    stop_echo_server(&x, x_thread);
+    stop_echo_server(&y, y_thread);
+}
+
+/* Past MR_SSH_MAX_TUNNELS, connections wait in the listen queue - not
+ * accepted and dropped - and are served once others close. */
+static void test_connections_past_the_limit_wait_their_turn(void) {
+    printf("connections past the tunnel limit\n");
+    echo_server server = { .listener = listen_loopback(0) };
+    server.port = bound_port(server.listener);
+    pthread_t echo;
+    pthread_create(&echo, NULL, echo_thread, &server);
+    uint16_t local = free_port();
+    mr_ssh_forward forward = { .local_port = local, .remote_host = "127.0.0.1", .remote_port = server.port };
+    harness h;
+    harness_start_with(&h, PLAN_KEY, "user_ed25519", g_port, &forward, 1);
+    pthread_t thread;
+    pthread_create(&thread, NULL, run_thread, &h);
+    write_text(&h, "echo limit-$((4+4))\n");
+    CHECK(wait_for(&h, "limit-8", 15), "not connected");
+
+    /* LIMIT - BURST open one by one, then 2 * BURST at once, so that the
+     * limit is reached with connections still queued. */
+    enum { LIMIT = MR_SSH_MAX_TUNNELS, BURST = 4, FIRST = LIMIT - BURST, TOTAL = LIMIT + BURST };
+    int fds[TOTAL];
+    int open_count = 0;
+    for (int i = 0; i < FIRST; i++) {
+        fds[i] = connect_loopback(local);
+        char byte = 'p';
+        if (fds[i] < 0 || write(fds[i], &byte, 1) != 1 || read(fds[i], &byte, 1) != 1 || byte != 'p') {
+            CHECK(0, "tunnel %d did not echo", i);
+            break;
+        }
+        open_count++;
+    }
+    CHECK(open_count == FIRST, "%d tunnels open", open_count);
+    if (open_count == FIRST) {
+        /* The run thread held in on_output while the burst queues up. */
+        pthread_mutex_lock(&h.lock);
+        h.stall = 1;
+        pthread_mutex_unlock(&h.lock);
+        write_text(&h, "echo stall\n");
+        struct timespec deadline;
+        deadline_in(&deadline, 15);
+        pthread_mutex_lock(&h.lock);
+        while (!h.stalled && pthread_cond_timedwait(&h.cond, &h.lock, &deadline) == 0) {}
+        CHECK(h.stalled, "the run thread did not stall");
+        pthread_mutex_unlock(&h.lock);
+        for (int i = FIRST; i < TOTAL; i++) fds[i] = connect_loopback(local);
+        pthread_mutex_lock(&h.lock);
+        h.stall = 0;
+        pthread_cond_broadcast(&h.cond);
+        pthread_mutex_unlock(&h.lock);
+        for (int i = FIRST; i < TOTAL; i++) {
+            char byte = 'q';
+            CHECK(fds[i] >= 0 && write(fds[i], &byte, 1) == 1, "burst connection %d", i);
+        }
+        usleep(500 * 1000);
+        int served = 0, waiting = 0;
+        for (int i = FIRST; i < TOTAL; i++) {
+            struct pollfd p = { .fd = fds[i], .events = POLLIN, .revents = 0 };
+            if (fds[i] < 0 || poll(&p, 1, 0) == 0) {
+                waiting++;
+                continue;
+            }
+            char byte = 0;
+            CHECK(read(fds[i], &byte, 1) == 1 && byte == 'q', "burst connection %d was dropped", i);
+            served++;
+            fds[i] = -fds[i] - 2;  /* served: skipped below, closed at the end */
+        }
+        CHECK(served == BURST && waiting == BURST, "served %d, waiting %d", served, waiting);
+        /* Room for the rest. */
+        for (int i = 0; i < BURST; i++) close(fds[i]);
+        for (int i = FIRST; i < TOTAL; i++) {
+            if (fds[i] < -1) continue;
+            char byte = 0;
+            CHECK(fds[i] >= 0 && read(fds[i], &byte, 1) == 1 && byte == 'q', "connection %d not served", i);
+        }
+        for (int i = BURST; i < TOTAL; i++) {
+            int fd = fds[i] < -1 ? -fds[i] - 2 : fds[i];
+            if (fd >= 0) close(fd);
+        }
+    } else {
+        for (int i = 0; i < open_count; i++) close(fds[i]);
+    }
+
+    /* The session itself is unharmed. */
+    write_text(&h, "echo after-$((5+5)); exit\n");
+    CHECK(wait_for(&h, "after-10", 15), "shell gone after the forwards");
+    wait_for(&h, NULL, 15);
+    harness_finish(&h, thread);
+    stop_echo_server(&server, echo);
+}
+
+/* While the shell's output is paused, its data waits but forwards still move:
+ * they share the one connection. */
+static void test_a_forward_works_while_output_is_paused(void) {
+    printf("forward while output is paused\n");
+    echo_server server = { .listener = listen_loopback(0) };
+    server.port = bound_port(server.listener);
+    pthread_t echo;
+    pthread_create(&echo, NULL, echo_thread, &server);
+    uint16_t local = free_port();
+    mr_ssh_forward forward = { .local_port = local, .remote_host = "127.0.0.1", .remote_port = server.port };
+    harness h;
+    harness_start_with(&h, PLAN_KEY, "user_ed25519", g_port, &forward, 1);
+    pthread_t thread;
+    pthread_create(&thread, NULL, run_thread, &h);
+    write_text(&h, "stty -echo; echo paused-$((3+4))\n");
+    CHECK(wait_for(&h, "paused-7", 15), "not connected");
+
+    pthread_mutex_lock(&h.lock);
+    h.blocked = 1;
+    pthread_mutex_unlock(&h.lock);
+    write_text(&h, "head -c 3000000 /dev/zero | tr '\\0' b; echo; echo done-$((4+5))\n");
+    sleep(1);
+
+    const size_t total = 256u * 1024u;
+    uint8_t *payload = malloc(total), *echoed = malloc(total);
+    for (size_t i = 0; i < total; i++) payload[i] = (uint8_t)(i * 7);
+    int fd = connect_loopback(local);
+    size_t sent = 0, received = 0;
+    while (fd >= 0 && received < total) {
+        if (sent < total) {
+            ssize_t w = write(fd, payload + sent, total - sent < 65536 ? total - sent : 65536);
+            if (w > 0) sent += (size_t)w;
+        }
+        ssize_t r = read(fd, echoed + received, total - received);
+        if (r <= 0) break;
+        received += (size_t)r;
+    }
+    CHECK(received == total && memcmp(payload, echoed, total) == 0, "echoed %zu of %zu", received, total);
+    if (fd >= 0) close(fd);
+    free(payload);
+    free(echoed);
+
+    pthread_mutex_lock(&h.lock);
+    h.blocked = 0;
+    pthread_mutex_unlock(&h.lock);
+    mr_ssh_session_resume_output(h.session);
+    CHECK(wait_for(&h, "done-9", 30), "shell output lost after the pause");
+    write_text(&h, "exit\n");
+    wait_for(&h, NULL, 15);
+    harness_finish(&h, thread);
+    stop_echo_server(&server, echo);
+}
+
 static void test_invalid_arguments_are_refused(void) {
     printf("argument checks\n");
     mr_ssh_session *session = NULL;
@@ -602,6 +850,13 @@ int main(void) {
         return 2;
     }
     g_port = (uint16_t)atoi(port);
+    /* The tunnel limit test holds a few hundred descriptors: clients, the
+     * bridge's tunnels and the echo server's ends. */
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur < 1024) {
+        limit.rlim_cur = limit.rlim_max < 1024 ? limit.rlim_max : 1024;
+        setrlimit(RLIMIT_NOFILE, &limit);
+    }
     CHECK(mr_ssh_bridge_abi_version() == MR_SSH_BRIDGE_ABI_VERSION, "abi");
 
     test_invalid_arguments_are_refused();
@@ -617,6 +872,9 @@ int main(void) {
     test_a_resize_reaches_the_pty();
     test_refused_output_is_held_not_lost();
     test_a_local_forward_carries_data_both_ways();
+    test_concurrent_opens_reach_their_own_destinations();
+    test_connections_past_the_limit_wait_their_turn();
+    test_a_forward_works_while_output_is_paused();
 
     if (g_failures) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);
