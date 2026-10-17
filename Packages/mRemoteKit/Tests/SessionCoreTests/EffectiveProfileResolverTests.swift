@@ -120,3 +120,124 @@ final class EffectiveProfileResolverTests: XCTestCase {
         XCTAssertFalse(RemoteEndpoint(host: "192.168.1", port: 3389).isIPLiteral)
     }
 }
+
+final class SSHProfileResolverTests: XCTestCase {
+    private func profile(_ ssh: SSHConfiguration) -> ConnectionProfile {
+        ConnectionProfile(
+            displayName: "shell",
+            endpoint: RemoteEndpoint(host: "shell.example", port: 22),
+            account: RemoteAccount(username: "dev"),
+            configuration: .ssh(ssh)
+        )
+    }
+
+    func testTerminalSettingsInheritTheGlobalDefaults() {
+        var settings = GlobalSettings()
+        settings.terminal = TerminalDefaults(fontSize: 17, theme: .dark, optionAsMeta: false)
+        let resolved = EffectiveProfileResolver().resolve(profile: profile(SSHConfiguration()), globalSettings: settings)
+        XCTAssertEqual(resolved.protocolKind, .ssh)
+        let ssh = try! XCTUnwrap(resolved.ssh)
+        XCTAssertEqual(ssh.fontSize, 17)
+        XCTAssertEqual(ssh.theme, .dark)
+        XCTAssertFalse(ssh.optionAsMeta)
+        XCTAssertEqual(ssh.terminalType, "xterm-256color")
+        XCTAssertNil(ssh.startupCommand)
+    }
+
+    func testExplicitTerminalSettingsWinAndAreClamped() {
+        let resolved = EffectiveProfileResolver().resolve(
+            profile: profile(SSHConfiguration(startupCommand: "  tmux a  ", terminalType: " ", fontSize: .explicit(200))),
+            globalSettings: .default
+        )
+        XCTAssertEqual(resolved.ssh?.fontSize, TerminalDefaults.fontSizeRange.upperBound)
+        XCTAssertEqual(resolved.ssh?.startupCommand, "tmux a")
+        XCTAssertEqual(resolved.ssh?.terminalType, "xterm-256color")
+    }
+
+    /// A reconnect is a new shell, so SSH does not reconnect by itself unless
+    /// the profile asks for it - whatever the global RDP default says.
+    func testSSHDoesNotReconnectByDefault() {
+        let settings = GlobalSettings(reconnectPolicy: .automatic)
+        let resolved = EffectiveProfileResolver().resolve(profile: profile(SSHConfiguration()), globalSettings: settings)
+        XCTAssertEqual(resolved.reconnectPolicy, .disabled)
+    }
+
+    func testAnRDPProfileHasNoSSHSettings() {
+        let rdp = ConnectionProfile(displayName: "d", endpoint: RemoteEndpoint(host: "d", port: 3389))
+        let resolved = EffectiveProfileResolver().resolve(profile: rdp, globalSettings: .default)
+        XCTAssertEqual(resolved.protocolKind, .rdp)
+        XCTAssertNil(resolved.ssh)
+    }
+}
+
+final class TerminalOutputBufferTests: XCTestCase {
+    func testBytesComeOutInOrderAcrossTheWrap() {
+        let buffer = TerminalOutputBuffer(capacity: 8)
+        XCTAssertEqual(buffer.append([1, 2, 3, 4, 5, 6]), 6)
+        XCTAssertEqual(buffer.drain(maximum: 4), [1, 2, 3, 4])
+        XCTAssertEqual(buffer.append([7, 8, 9, 10, 11]), 5)
+        XCTAssertEqual(buffer.drain(), [5, 6, 7, 8, 9, 10, 11])
+        XCTAssertTrue(buffer.isEmpty)
+    }
+
+    func testAFullBufferTakesWhatFitsAndWakesTheWriterOnDrain() {
+        let buffer = TerminalOutputBuffer(capacity: 4)
+        let woken = LockedCounter()
+        buffer.setSpaceAvailableHandler { woken.increment() }
+        XCTAssertEqual(buffer.append([1, 2, 3, 4, 5, 6]), 4)
+        XCTAssertEqual(woken.value, 0)
+        XCTAssertEqual(buffer.drain(maximum: 1), [1])
+        XCTAssertEqual(woken.value, 1)
+        // No refused append since: no second wake.
+        _ = buffer.drain()
+        XCTAssertEqual(woken.value, 1)
+    }
+
+    func testTheReaderIsNotifiedOncePerBatch() {
+        let buffer = TerminalOutputBuffer(capacity: 64)
+        let notified = LockedCounter()
+        buffer.setReadableHandler { notified.increment() }
+        _ = buffer.append([1])
+        _ = buffer.append([2])
+        XCTAssertEqual(notified.value, 1)
+        _ = buffer.drain()
+        _ = buffer.append([3])
+        XCTAssertEqual(notified.value, 2)
+    }
+
+    func testConcurrentWriterAndReaderLoseNothing() {
+        let buffer = TerminalOutputBuffer(capacity: 1024)
+        let total = 200_000
+        let writer = Thread {
+            var next = 0
+            while next < total {
+                let chunk = (next..<min(next + 300, total)).map { UInt8(truncatingIfNeeded: $0) }
+                var offset = 0
+                while offset < chunk.count {
+                    offset += chunk[offset...].withContiguousStorageIfAvailable { buffer.append(UnsafeRawBufferPointer($0)) } ?? 0
+                    if offset < chunk.count { usleep(50) }
+                }
+                next += chunk.count
+            }
+        }
+        writer.start()
+        var received = 0
+        var ok = true
+        let deadline = Date().addingTimeInterval(20)
+        while received < total, Date() < deadline {
+            for byte in buffer.drain(maximum: 500) {
+                if byte != UInt8(truncatingIfNeeded: received) { ok = false }
+                received += 1
+            }
+        }
+        XCTAssertEqual(received, total)
+        XCTAssertTrue(ok)
+    }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+}

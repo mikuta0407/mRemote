@@ -58,23 +58,37 @@ public struct RemoteAccount: Hashable, Sendable, Codable {
 
 public enum ProtocolKind: String, Hashable, Sendable, Codable, CaseIterable {
     case rdp
-    // case ssh - added in Phase 8 without changing the list query or the
-    // common columns above.
+    /// Phase 8 (docs/ssh-design.md). Added without changing the list query or
+    /// the common columns above.
+    case ssh
+
+    public var defaultPort: UInt16 {
+        switch self {
+        case .rdp: return 3389
+        case .ssh: return SSHConfiguration.defaultPort
+        }
+    }
 }
 
 public enum ProtocolConfiguration: Hashable, Sendable, Codable {
     case rdp(RDPConfiguration)
+    case ssh(SSHConfiguration)
 
     public var kind: ProtocolKind {
         switch self {
         case .rdp: return .rdp
+        case .ssh: return .ssh
         }
     }
 
     public var rdp: RDPConfiguration? {
-        switch self {
-        case .rdp(let configuration): return configuration
-        }
+        if case .rdp(let configuration) = self { return configuration }
+        return nil
+    }
+
+    public var ssh: SSHConfiguration? {
+        if case .ssh(let configuration) = self { return configuration }
+        return nil
     }
 }
 

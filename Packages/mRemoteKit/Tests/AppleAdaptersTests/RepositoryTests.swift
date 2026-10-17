@@ -155,4 +155,50 @@ final class LoginKeychainTests: XCTestCase {
         try repository.remove(host: "desk.example", port: 3389)
         XCTAssertEqual(try repository.allRecords().count, 0)
     }
+
+    func testKnownHostsRoundTripInTheLoginKeychain() throws {
+        let repository = KeychainKnownHostRepository(
+            service: "com.mikuta0407.mRemote.tests.\(UUID().uuidString)",
+            store: .login
+        )
+        defer { try? repository.remove(host: "shell.example", port: 22) }
+
+        XCTAssertEqual(try repository.decision(host: "shell.example", port: 22, fingerprint: "SHA256:a"), .unknown)
+        try repository.store(KnownHost(host: "Shell.Example", port: 22, keyType: "ssh-ed25519", fingerprint: "SHA256:a"))
+        guard case .matches = try repository.decision(host: "shell.example", port: 22, fingerprint: "SHA256:a") else {
+            return XCTFail("the trusted key was not found")
+        }
+        guard case .changed(let previous) = try repository.decision(host: "shell.example", port: 22, fingerprint: "SHA256:b") else {
+            return XCTFail("a different key was not flagged")
+        }
+        XCTAssertEqual(previous.fingerprint, "SHA256:a")
+        XCTAssertEqual(try repository.decision(host: "shell.example", port: 2222, fingerprint: "SHA256:a"), .unknown)
+        XCTAssertEqual(try repository.allHosts().count, 1)
+        try repository.remove(host: "shell.example", port: 22)
+        XCTAssertEqual(try repository.allHosts().count, 0)
+    }
+
+    func testSSHKeysRoundTripInTheLoginKeychain() throws {
+        let repository = KeychainSSHKeyRepository(
+            service: "com.mikuta0407.mRemote.tests.\(UUID().uuidString)",
+            store: .login
+        )
+        let metadata = SSHKeyMetadata(
+            name: "laptop", keyType: "ssh-ed25519", publicKey: "ssh-ed25519 AAAA test",
+            fingerprint: "SHA256:x", isEncrypted: true)
+        defer { try? repository.delete(metadata.id) }
+
+        try repository.store(metadata, privateKey: Data("-----BEGIN OPENSSH PRIVATE KEY-----".utf8))
+        try repository.storePassphrase("pass phrase", for: metadata.id)
+        XCTAssertEqual(try repository.allKeys().map(\.id), [metadata.id])
+        XCTAssertEqual(try repository.privateKey(for: metadata.id), Data("-----BEGIN OPENSSH PRIVATE KEY-----".utf8))
+        XCTAssertEqual(try repository.passphrase(for: metadata.id), "pass phrase")
+        try repository.rename(metadata.id, to: "work")
+        XCTAssertEqual(try repository.metadata(for: metadata.id)?.name, "work")
+        try repository.storePassphrase(nil, for: metadata.id)
+        XCTAssertNil(try repository.passphrase(for: metadata.id))
+        try repository.delete(metadata.id)
+        XCTAssertEqual(try repository.allKeys().count, 0)
+        XCTAssertNil(try repository.privateKey(for: metadata.id))
+    }
 }

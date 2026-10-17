@@ -25,6 +25,11 @@ public struct EffectiveConnectionConfiguration: Hashable, Sendable {
     public let prefersH264: Bool
     public let remotePlatform: RemotePlatform
     public let streamQuality: StreamQuality
+    /// Set for an SSH connection, which then ignores the RDP settings above
+    /// (they hold the global defaults, unused). docs/ssh-design.md 5.2.
+    public let ssh: EffectiveSSHSettings?
+
+    public var protocolKind: ProtocolKind { ssh == nil ? .rdp : .ssh }
 
     public init(
         profileID: ProfileID?,
@@ -46,7 +51,8 @@ public struct EffectiveConnectionConfiguration: Hashable, Sendable {
         redirectsMicrophone: Bool = false,
         prefersH264: Bool = true,
         remotePlatform: RemotePlatform = .standard,
-        streamQuality: StreamQuality = .automatic
+        streamQuality: StreamQuality = .automatic,
+        ssh: EffectiveSSHSettings? = nil
     ) {
         self.profileID = profileID
         self.displayName = displayName
@@ -68,6 +74,7 @@ public struct EffectiveConnectionConfiguration: Hashable, Sendable {
         self.prefersH264 = prefersH264
         self.remotePlatform = remotePlatform
         self.streamQuality = streamQuality
+        self.ssh = ssh
     }
 
     /// Eisu/Kana to Muhenkan/Henkan is only promised for the Japanese layout,
@@ -82,8 +89,12 @@ public struct EffectiveProfileResolver: Sendable {
         profile: ConnectionProfile,
         globalSettings: GlobalSettings
     ) -> EffectiveConnectionConfiguration {
-        guard let rdp = profile.configuration.rdp else {
-            preconditionFailure("unhandled protocol configuration \(profile.configuration.kind)")
+        let rdp: RDPConfiguration
+        switch profile.configuration {
+        case .rdp(let configuration):
+            rdp = configuration
+        case .ssh(let ssh):
+            return resolve(profile: profile, ssh: ssh, globalSettings: globalSettings)
         }
         return EffectiveConnectionConfiguration(
             profileID: profile.id,
@@ -106,6 +117,49 @@ public struct EffectiveProfileResolver: Sendable {
             prefersH264: rdp.prefersH264,
             remotePlatform: rdp.remotePlatform,
             streamQuality: rdp.preferredStreamQuality
+        )
+    }
+}
+
+extension EffectiveProfileResolver {
+    fileprivate func resolve(
+        profile: ConnectionProfile,
+        ssh: SSHConfiguration,
+        globalSettings: GlobalSettings
+    ) -> EffectiveConnectionConfiguration {
+        let terminal = globalSettings.terminal
+        let settings = EffectiveSSHSettings(
+            authentication: ssh.authentication,
+            startupCommand: ssh.effectiveStartupCommand,
+            terminalType: ssh.effectiveTerminalType,
+            fontSize: min(max(ssh.fontSize.resolved(default: terminal.fontSize), TerminalDefaults.fontSizeRange.lowerBound),
+                          TerminalDefaults.fontSizeRange.upperBound),
+            theme: ssh.theme.resolved(default: terminal.theme),
+            optionAsMeta: ssh.optionAsMeta.resolved(default: terminal.optionAsMeta),
+            cursorStyle: ssh.cursorStyle.resolved(default: terminal.cursorStyle),
+            scrollbackLines: min(max(terminal.scrollbackLines, TerminalDefaults.scrollbackRange.lowerBound),
+                                 TerminalDefaults.scrollbackRange.upperBound),
+            keepAliveSeconds: max(0, ssh.keepAliveSeconds.resolved(default: terminal.keepAliveSeconds)),
+            exitBehavior: ssh.exitBehavior.resolved(default: terminal.exitBehavior),
+            portForwards: ssh.portForwards ?? []
+        )
+        // The RDP fields take the global defaults: nothing reads them for an
+        // SSH connection, and a real value is safer than a sentinel.
+        return EffectiveConnectionConfiguration(
+            profileID: profile.id,
+            displayName: profile.displayName,
+            endpoint: profile.endpoint,
+            account: profile.account,
+            resolutionPolicy: globalSettings.resolutionPolicy,
+            initialScale: globalSettings.initialScale,
+            displayQuality: globalSettings.displayQuality,
+            keyboardLayout: globalSettings.keyboardLayout,
+            audioPlayback: false,
+            clipboardPolicy: ssh.clipboardPolicy.resolved(default: globalSettings.clipboardPolicy),
+            scrollDirection: globalSettings.scrollDirection,
+            reconnectPolicy: ssh.reconnectPolicy.resolved(default: globalSettings.reconnectPolicy),
+            securityPolicy: .secureAutomatic,
+            ssh: settings
         )
     }
 }

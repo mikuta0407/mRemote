@@ -42,6 +42,9 @@ public enum RemoteEndReason: Hashable, Sendable {
     case signedOut
     case idleTimeout
     case signInTimeout
+    /// SSH: the shell ended by itself (`exit`, logout). The status is the
+    /// shell's exit status, when the server sent one.
+    case shellExited(status: Int32?)
 }
 
 public enum SessionVisibility: Hashable, Sendable {

@@ -4,12 +4,124 @@ import Foundation
 public enum SessionChallenge: Hashable, Sendable {
     case credential(CredentialChallenge)
     case certificate(CertificateChallenge)
+    /// SSH: the server's host key is new, or changed.
+    case hostKey(HostKeyChallenge)
+    /// SSH: the server's own prompts (one-time codes and the like).
+    case keyboardInteractive(KeyboardInteractiveChallenge)
+    /// SSH: the stored private key is encrypted and its passphrase is not
+    /// stored, or was wrong.
+    case keyPassphrase(KeyPassphraseChallenge)
 
     public var id: ChallengeID {
         switch self {
         case .credential(let challenge): return challenge.id
         case .certificate(let challenge): return challenge.id
+        case .hostKey(let challenge): return challenge.id
+        case .keyboardInteractive(let challenge): return challenge.id
+        case .keyPassphrase(let challenge): return challenge.id
         }
+    }
+}
+
+/// docs/ssh-design.md section 7.1. The fingerprint is the OpenSSH form,
+/// "SHA256:" and unpadded base64 of the key blob's SHA-256, so it can be
+/// compared with `ssh-keygen -lf` on the server.
+public struct HostKeyChallenge: Hashable, Sendable {
+    public let id: ChallengeID
+    public let generation: SessionGeneration
+    public let host: String
+    public let port: UInt16
+    /// The SSH name, e.g. "ssh-ed25519".
+    public let keyType: String
+    public let fingerprint: String
+    public let disposition: HostKeyDisposition
+
+    public init(
+        id: ChallengeID = ChallengeID(),
+        generation: SessionGeneration,
+        host: String,
+        port: UInt16,
+        keyType: String,
+        fingerprint: String,
+        disposition: HostKeyDisposition
+    ) {
+        self.id = id
+        self.generation = generation
+        self.host = host
+        self.port = port
+        self.keyType = keyType
+        self.fingerprint = fingerprint
+        self.disposition = disposition
+    }
+}
+
+public enum HostKeyDisposition: Hashable, Sendable {
+    /// First connection to this endpoint.
+    case unknown
+    /// A different key than the one the user trusted. Presented as a
+    /// warning, never like a first connection, and never replaced silently.
+    case changed(previousKeyType: String, previousFingerprint: String)
+
+    public var isIdentityChange: Bool {
+        if case .changed = self { return true }
+        return false
+    }
+}
+
+public struct KeyboardInteractivePrompt: Hashable, Sendable {
+    public let text: String
+    /// False for secrets: the answer field hides what is typed.
+    public let echo: Bool
+
+    public init(text: String, echo: Bool) {
+        self.text = text
+        self.echo = echo
+    }
+}
+
+public struct KeyboardInteractiveChallenge: Hashable, Sendable {
+    public let id: ChallengeID
+    public let generation: SessionGeneration
+    public let host: String
+    public let name: String
+    public let instruction: String
+    /// May be empty: an instruction to acknowledge.
+    public let prompts: [KeyboardInteractivePrompt]
+
+    public init(
+        id: ChallengeID = ChallengeID(),
+        generation: SessionGeneration,
+        host: String,
+        name: String,
+        instruction: String,
+        prompts: [KeyboardInteractivePrompt]
+    ) {
+        self.id = id
+        self.generation = generation
+        self.host = host
+        self.name = name
+        self.instruction = instruction
+        self.prompts = prompts
+    }
+}
+
+public struct KeyPassphraseChallenge: Hashable, Sendable {
+    public let id: ChallengeID
+    public let generation: SessionGeneration
+    public let keyName: String
+    /// A passphrase was already tried for this key and failed.
+    public let previousWasRejected: Bool
+
+    public init(
+        id: ChallengeID = ChallengeID(),
+        generation: SessionGeneration,
+        keyName: String,
+        previousWasRejected: Bool
+    ) {
+        self.id = id
+        self.generation = generation
+        self.keyName = keyName
+        self.previousWasRejected = previousWasRejected
     }
 }
 
@@ -136,6 +248,9 @@ public enum ChallengeResponse: Hashable, Sendable {
     case credential(username: String, domain: String?, password: String, save: Bool)
     case trustOnce
     case trustPersistently
+    /// One answer per prompt, in order.
+    case keyboardInteractive(answers: [String])
+    case passphrase(String, save: Bool)
     case cancel
 }
 
@@ -161,6 +276,8 @@ public enum RemoteSessionError: Hashable, Sendable, Error {
     case authenticationFailed
     case accountRestricted
     case certificateRejected
+    /// SSH: the host key was refused, or a changed one was not accepted.
+    case hostKeyRejected
     case userCancelled
     case protocolFailure(detail: String)
     case resourceUnavailable
@@ -174,7 +291,7 @@ public enum RemoteSessionError: Hashable, Sendable, Error {
         case .networkUnreachable, .connectionTimedOut, .protocolFailure:
             return true
         case .nameResolutionFailed, .connectionRefused, .tlsHandshakeFailed, .securityNegotiationFailed,
-             .authenticationFailed, .accountRestricted, .certificateRejected,
+             .authenticationFailed, .accountRestricted, .certificateRejected, .hostKeyRejected,
              .userCancelled, .resourceUnavailable, .internalFailure:
             return false
         }

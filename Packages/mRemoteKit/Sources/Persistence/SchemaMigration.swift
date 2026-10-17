@@ -17,8 +17,12 @@ public struct SchemaVersion: RawRepresentable, Hashable, Comparable, Sendable, C
     public static let v1 = SchemaVersion(1)
     /// Adds `globalSettings.softwareKeyboardMode`.
     public static let v2 = SchemaVersion(2)
+    /// Adds `globalSettings.terminal` and SSH profiles. A build that knows
+    /// only v2 refuses a v3 store as from the future instead of failing to
+    /// decode an SSH profile and calling the file malformed.
+    public static let v3 = SchemaVersion(3)
     /// The version this build writes.
-    public static let current = v2
+    public static let current = v3
 }
 
 /// One step of the upgrade path. Steps are single-version so the chain can be
@@ -48,6 +52,7 @@ public struct SchemaMigrator: Sendable {
     /// Every step this build knows, oldest first.
     public static let standardMigrations: [any SchemaMigration] = [
         AddSoftwareKeyboardModeMigration(),
+        AddTerminalDefaultsMigration(),
     ]
 
     public init(
@@ -122,6 +127,37 @@ public struct AddSoftwareKeyboardModeMigration: SchemaMigration {
         }
         if settings["softwareKeyboardMode"] == nil {
             settings["softwareKeyboardMode"] = .string(SoftwareKeyboardMode.localIME.rawValue)
+        }
+        object["globalSettings"] = .object(settings)
+        return .object(object)
+    }
+}
+
+/// v2 -> v3: the terminal defaults SSH profiles inherit, written out for the
+/// same reason as v2's keyboard mode. The literal values are this
+/// migration's, not `TerminalDefaults.default`'s, so changing a default later
+/// does not change what an upgraded v2 store says.
+public struct AddTerminalDefaultsMigration: SchemaMigration {
+    public let source = SchemaVersion.v2
+    public let destination = SchemaVersion.v3
+
+    public init() {}
+
+    public func migrate(_ document: JSONValue) throws -> JSONValue {
+        guard var object = document.objectValue,
+              var settings = object["globalSettings"]?.objectValue else {
+            throw StoreError.malformedDocument(detail: "globalSettings is missing")
+        }
+        if settings["terminal"] == nil {
+            settings["terminal"] = .object([
+                "fontSize": .number(13),
+                "theme": .string("system"),
+                "optionAsMeta": .bool(true),
+                "cursorStyle": .string("block"),
+                "scrollbackLines": .number(10_000),
+                "keepAliveSeconds": .number(30),
+                "exitBehavior": .string("keepScreen"),
+            ])
         }
         object["globalSettings"] = .object(settings)
         return .object(object)

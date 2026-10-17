@@ -19,7 +19,20 @@ final class ProfileDocumentCodecTests: XCTestCase {
             createdAt: timestamp,
             updatedAt: timestamp
         )
-        return ProfileDocument(profiles: [profile], globalSettings: .default)
+        let shell = ConnectionProfile(
+            displayName: "build box",
+            endpoint: RemoteEndpoint(host: "build.example", port: 22),
+            account: RemoteAccount(username: "dev", credentialReference: CredentialReference()),
+            configuration: .ssh(SSHConfiguration(
+                authentication: SSHAuthentication(keyID: SSHKeyID(), allowsPassword: false),
+                startupCommand: "tmux new -A -s main",
+                fontSize: .explicit(15),
+                portForwards: [SSHPortForward(localPort: 13389, remoteHost: "10.0.0.5", remotePort: 3389)]
+            )),
+            createdAt: timestamp,
+            updatedAt: timestamp
+        )
+        return ProfileDocument(profiles: [profile, shell], globalSettings: .default)
     }()
 
     private func sampleDocument() -> ProfileDocument { sample }
@@ -44,9 +57,40 @@ final class ProfileDocumentCodecTests: XCTestCase {
         let v1 = try JSONSerialization.data(withJSONObject: object)
 
         let decoded = try ProfileDocumentCodec().decode(v1)
-        XCTAssertEqual(decoded.schemaVersion, .v2)
+        XCTAssertEqual(decoded.schemaVersion, .current)
         XCTAssertEqual(decoded.globalSettings.softwareKeyboardMode, .localIME)
         XCTAssertEqual(decoded.profiles, sample.profiles)
+    }
+
+    func testAVersionTwoDocumentGainsTheTerminalDefaults() throws {
+        // A store written before SSH: no terminal settings, no SSH profiles.
+        var document = sample
+        document.profiles.removeAll { $0.protocolKind == .ssh }
+        let encoded = try ProfileDocumentCodec().encode(document)
+        var object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        var settings = try XCTUnwrap(object["globalSettings"] as? [String: Any])
+        settings.removeValue(forKey: "terminal")
+        object["globalSettings"] = settings
+        object["schemaVersion"] = 2
+        let v2 = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try ProfileDocumentCodec().decode(v2)
+        XCTAssertEqual(decoded.schemaVersion, .v3)
+        XCTAssertEqual(decoded.globalSettings.terminal, TerminalDefaults())
+        XCTAssertEqual(decoded.profiles, document.profiles)
+    }
+
+    func testAnSSHProfileSurvivesTheRoundTrip() throws {
+        let codec = ProfileDocumentCodec()
+        let decoded = try codec.decode(try codec.encode(sample))
+        let shell = try XCTUnwrap(decoded.profiles.first { $0.protocolKind == .ssh })
+        let ssh = try XCTUnwrap(shell.configuration.ssh)
+        XCTAssertEqual(ssh.authentication.allowsPassword, false)
+        XCTAssertEqual(ssh.effectiveStartupCommand, "tmux new -A -s main")
+        XCTAssertEqual(ssh.portForwards?.first?.remotePort, 3389)
+        XCTAssertEqual(ssh.reconnectPolicy, .explicit(.disabled))
     }
 
     func testEncodingIsStable() throws {

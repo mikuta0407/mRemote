@@ -18,6 +18,7 @@ let package = Package(
         .library(name: "AppleAdapters", targets: ["AppleAdapters"]),
         .library(name: "RDPProtocol", targets: ["RDPProtocol"]),
         .library(name: "InputCore", targets: ["InputCore"]),
+        .library(name: "SSHProtocol", targets: ["SSHProtocol"]),
     ],
     targets: [
         .target(name: "SessionCore"),
@@ -43,11 +44,17 @@ let package = Package(
         // scroll quantisation and the local-to-remote mapping. It holds no
         // protocol mapping, so a scan code never appears here.
         .target(name: "InputCore", dependencies: ["SessionCore"]),
+        // docs/ssh-design.md section 4: everything about SSH that does not
+        // need libssh2 - the sign-in policy, the failure vocabulary of the C
+        // bridge, host key fingerprints, key files and the bytes a key sends.
+        // The session adapter that drives the bridge is in App/SSH/.
+        .target(name: "SSHProtocol", dependencies: ["SessionCore"]),
         .testTarget(name: "SessionCoreTests", dependencies: ["SessionCore"]),
         .testTarget(name: "PersistenceTests", dependencies: ["Persistence"]),
         .testTarget(name: "AppleAdaptersTests", dependencies: ["AppleAdapters"]),
         .testTarget(name: "RDPProtocolTests", dependencies: ["RDPProtocol"]),
         // RDPProtocol only to check that every on-screen key has a scan code.
         .testTarget(name: "InputCoreTests", dependencies: ["InputCore", "RDPProtocol"]),
+        .testTarget(name: "SSHProtocolTests", dependencies: ["SSHProtocol"]),
     ]
 )

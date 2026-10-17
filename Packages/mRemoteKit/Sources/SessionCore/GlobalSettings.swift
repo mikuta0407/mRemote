@@ -23,6 +23,8 @@ public struct GlobalSettings: Hashable, Sendable, Codable {
     public var reconnectPolicy: ReconnectPolicy
     /// Schema v2. Where the software keyboard starts; switchable per session.
     public var softwareKeyboardMode: SoftwareKeyboardMode
+    /// Schema v3. What SSH profiles inherit.
+    public var terminal: TerminalDefaults
 
     public init(
         resolutionPolicy: ResolutionPolicy = .adaptive,
@@ -33,7 +35,8 @@ public struct GlobalSettings: Hashable, Sendable, Codable {
         clipboardPolicy: ClipboardPolicy = .bidirectional,
         scrollDirection: ScrollDirection = .normal,
         reconnectPolicy: ReconnectPolicy = .automatic,
-        softwareKeyboardMode: SoftwareKeyboardMode = .localIME
+        softwareKeyboardMode: SoftwareKeyboardMode = .localIME,
+        terminal: TerminalDefaults = .default
     ) {
         self.resolutionPolicy = resolutionPolicy
         self.initialScale = initialScale
@@ -44,6 +47,7 @@ public struct GlobalSettings: Hashable, Sendable, Codable {
         self.scrollDirection = scrollDirection
         self.reconnectPolicy = reconnectPolicy
         self.softwareKeyboardMode = softwareKeyboardMode
+        self.terminal = terminal
     }
 
     public static let `default` = GlobalSettings()

@@ -112,7 +112,7 @@ public actor FakeRemoteSession: RemoteSession, ClipboardCapableSession {
             emit(.error(.userCancelled))
             machine.transition(to: .disconnected)
             emit(.stateChanged(machine.state, generation: machine.generation))
-        case .credential, .trustOnce, .trustPersistently:
+        case .credential, .trustOnce, .trustPersistently, .keyboardInteractive, .passphrase:
             machine.transition(to: .connecting)
             emit(.stateChanged(machine.state, generation: machine.generation))
             finishConnecting()
