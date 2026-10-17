@@ -1,0 +1,14 @@
+# mRemote SSH native dependency lock (shell-compatible KEY=VALUE format).
+# Update this file and ThirdParty/SBOM.spdx.json in the same change.
+LOCK_FORMAT_VERSION=1
+
+# libssh2 has not tagged a release since 1.11.1 (2024-10). The pinned master
+# commit carries the 2026 security fixes and builds against OpenSSL 4, which
+# 1.11.1 predates. Move to the next release tag once there is one.
+LIBSSH2_VERSION=1.11.2-dev
+LIBSSH2_GIT_URL=https://github.com/libssh2/libssh2.git
+LIBSSH2_COMMIT=3209951db4e47ef902db047d12f9f464f835c27e
+LIBSSH2_COMMIT_DATE=2026-10-16
+LIBSSH2_LICENSE_SHA256=a83a4da224ebeaaaea5efb4cd1ef1ab0998c1bd719d6f70b05e1d5c491372137
+
+XCFRAMEWORK_NAME=mRemoteSSH.xcframework
