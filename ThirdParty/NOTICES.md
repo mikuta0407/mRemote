@@ -11,6 +11,10 @@ The Phase 0 native binary contains code from the following projects:
   WinPR's changes remain Apache-2.0.
 - macrdpx (Mac RDP eXtensions, `external/macrdpx`), Copyright (c) 2026 mikuta0407, licensed under
   the MIT license. Compiled into the bridge.
+- libssh2, Copyright the libssh2 project and its contributors, licensed under the BSD-3-Clause
+  license. Built from the commit in `config/dependencies/libssh2.lock` into `mRemoteSSH.xcframework`.
+- SwiftTerm, Copyright (c) Miguel de Icaza and contributors, licensed under the MIT license. Linked
+  as a Swift package, version 1.20.0.
 - Unicode CLDR `windowsZones.xml` data represented by WinPR's generated `WindowsZones.c`,
   Copyright Unicode, Inc., licensed under Unicode-DFS-2016.
 
@@ -22,6 +26,8 @@ The distributed license/notice texts are:
 - [`licenses/Keith-Pomakis-HashTable-public-domain.txt`](licenses/Keith-Pomakis-HashTable-public-domain.txt)
 - [`licenses/Unicode-DFS-2016.txt`](licenses/Unicode-DFS-2016.txt)
 - [`licenses/macrdpx-MIT.txt`](licenses/macrdpx-MIT.txt)
+- [`licenses/libssh2-BSD-3-Clause.txt`](licenses/libssh2-BSD-3-Clause.txt)
+- [`licenses/SwiftTerm-MIT.txt`](licenses/SwiftTerm-MIT.txt)
 
 Exact upstream project licenses and the separately licensed bundled source files are verified by
 the SHA-256 values in `config/dependencies/freerdp.lock` before a binary is built.

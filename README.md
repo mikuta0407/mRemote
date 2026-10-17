@@ -102,9 +102,9 @@ the GitHub release and updates the cask in
 Clone with `--recurse-submodules` (or run `git submodule update --init`):
 the bridge compiles `external/macrdpx`.
 
-The app target links the generated `artifacts/FreeRDP.xcframework` and
-`artifacts/mRemoteRDPBridge.xcframework`, which are ignored by git and have to
-be built once before the app will link. `Packages/mRemoteKit` deliberately
+The app target links the generated `artifacts/FreeRDP.xcframework`,
+`artifacts/mRemoteRDPBridge.xcframework` and `artifacts/mRemoteSSH.xcframework`,
+which are ignored by git and have to be built once before the app will link. `Packages/mRemoteKit` deliberately
 does not declare them, so `swift test` works in a fresh clone with no native
 build; the app does not.
 
@@ -139,7 +139,18 @@ Building the native dependencies from source is documented in
 ```sh
 scripts/build-freerdp-xcframework.sh
 scripts/build-rdp-bridge-xcframework.sh
+scripts/build-ssh-xcframework.sh      # libssh2 + the SSH bridge, on FreeRDP's OpenSSL
 ```
+
+The SSH terminal uses [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)
+as a Swift package (exact version, `Package.resolved` is committed). Two
+things follow from it: its Metal shaders need Xcode's Metal toolchain
+(`xcodebuild -downloadComponent MetalToolchain`, once), and command-line builds
+pass `-skipPackagePluginValidation` for its build-info plugin.
+
+SSH has tests of its own: `bridge/ssh/README.md` (the C bridge against a
+throwaway loopback sshd), and `bridge/ssh/tests/run_live_app_tests.sh` /
+`run_live_ui_tests.sh` (the app in a headless Simulator against one).
 
 Both XCFrameworks carry three slices: `ios-arm64`, `ios-arm64-simulator` and
 `ios-arm64-maccatalyst`. An artifact built before the Mac slice existed has

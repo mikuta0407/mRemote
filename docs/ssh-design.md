@@ -2,7 +2,7 @@
 
 [roadmap.md](roadmap.md) Phase 8 の詳細設計。[architecture.md](architecture.md) §1・§3・§4 の「RDP と SSH はプロファイル、ライフサイクル、一覧/切替 UI までを共通にし、描画と入力は共通化しない」方針を前提に、何を足し、何を変え、何を使い回すかを決める。
 
-本文書の状態: **設計案（2026-10-17）**。§3 の採用ライブラリは Phase 8.0 スパイク（§13）で合否を確認してから確定する。
+本文書の状態: **実装済み（2026-10-17、ブランチ feature/ssh-design）**。8.0〜8.5 のうちポートフォワードまで入った。設計から変えた点は各節の「実装」に書き、§15 にまとめた。
 
 ## 1. スコープ
 
@@ -57,6 +57,8 @@ libssh2 の暗号は OpenSSL backend を使う。FreeRDP の XCFramework には�
 
 既定案は (A)。`scripts/build-ssh-xcframework.sh` を新設し、`artifacts/*.sha256` と SPDX（`generate-dependency-metadata.sh`）にも libssh2 を載せる。
 
+**実装:** (A) の変形にした。OpenSSL を切り出す代わりに、libssh2 を `FreeRDP.xcframework` が公開している OpenSSL ヘッダーに対してコンパイルし、`mRemoteSSH.xcframework`（libssh2 + `mr_ssh`）には OpenSSL を入れない（スクリプトが `EVP_*` の定義が無いことを検査する）。アプリは OpenSSL を FreeRDP 経由で一度だけリンクする。RDP bridge が FreeRDP を同梱しないのと同じ形で、FreeRDP のビルドスクリプトには手を入れずに済んだ。libssh2 は 1.11.1 以降リリースが無く、1.11.1 は OpenSSL 4 より古いので、2026 年のセキュリティ修正を含む master の commit を `config/dependencies/libssh2.lock` に固定した。
+
 ### 3.2 端末エミュレーター: SwiftTerm（第一候補）
 
 - MIT。UI 非依存の端末エンジンと、UIKit/AppKit の front-end を持つ。商用の iOS SSH クライアントで使われている。
@@ -65,6 +67,8 @@ libssh2 の暗号は OpenSSL backend を使う。FreeRDP の XCFramework には�
 - SPM のリモート依存は初めてになる。既存方針（ピン留め・SBOM）に合わせ、**exact version 指定**（`exactVersion`）で取り込み、`Package.resolved` をコミットし、ライセンス画面と SPDX に載せる。
 
 自作のエンジンは不採用。VT100/xterm の互換性（代替画面、DEC モード、全角幅、結合文字）を個人開発で追うのは割に合わない。
+
+**実装:** SwiftTerm 1.20.0（exact）。1.99.0 は 2.0 へ向けて API を変える途中版なので避けた。Mac Catalyst では UIKit 版がそのまま動く（ビルドと実行を確認）。取り込みに伴って二つ要るものがある: シェーダー用の Xcode Metal toolchain（`xcodebuild -downloadComponent MetalToolchain`）と、build-info プラグインのためのコマンドラインビルドの `-skipPackagePluginValidation`（`scripts/release.sh` に追加済み）。
 
 ## 4. モジュール構成
 
@@ -79,6 +83,8 @@ libssh2 の暗号は OpenSSL backend を使う。FreeRDP の XCFramework には�
 | `mr_ssh` bridge | `bridge/ssh/`（C） | libssh2 の handle を opaque に包む C ABI。§6.1 |
 
 依存方向は既存と同じく上から下のみ。`SSHProtocol` と `RDPProtocol` は互いに import しない。
+
+**実装:** `TerminalCore` は作らなかった。出力バッファ（`TerminalOutputBuffer`）と `TerminalSession` は `LatestDesktopFrameStore` と同じく `SessionCore` に、キー → バイト列の変換表は scan code と同じくプロトコル側の `SSHProtocol` に置いた。
 
 ## 5. データモデル
 
@@ -154,6 +160,8 @@ public enum EffectiveProtocolSettings: Hashable, Sendable {
 ```
 
 RDP の項目を参照している箇所（`SessionWorkspaceModel`、`RDPRemoteSession`、メニューなど）は機械的に `configuration.rdp?.xxx` へ置き換える。移行を楽にするため、最初の段階では `EffectiveConnectionConfiguration` に RDP 項目を返す computed property を残してもよい（RDP 以外では呼ばない前提の暫定措置。8.1 の終わりで消す）。
+
+**実装:** 作り替えはしなかった。既存の平らな RDP 項目はそのまま残し、`ssh: EffectiveSSHSettings?` と `protocolKind` を足した。SSH のときの RDP 項目は全体設定の値（未使用）が入る。RDP の呼び出し側を一つも変えずに済み、退行の危険が無いため。項目が増えて扱いにくくなったら上の形に移す。
 
 ### 5.3 永続化と schema
 
@@ -284,6 +292,7 @@ public enum HostKeyDisposition: Hashable, Sendable {
 
 - Keychain の generic password に、秘密鍵（OpenSSH 形式のバイト列）を `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` で保存する。iCloud キーチェーンには同期しない。メタデータ（名前、種類、公開鍵、指紋）は同じ item の attribute か、別の非秘密 item に置く。
 - 取り込み: ファイル（`UIDocumentPicker`）または貼り付け。パスフレーズ付きの鍵は、取り込み時に一度復号して検証し、**パスフレーズごと保存するかどうかをユーザーに選ばせる**（保存しない場合は接続のたびに `credential` challenge で聞く）。
+  - **実装:** 取り込み時には復号しない（OpenSSH 形式の暗号化は bcrypt_pbkdf + AES で、Swift 側に実装を持ち込む価値が無い）。公開鍵と指紋は暗号化されていない部分から読める。パスフレーズは接続時に `keyPassphrase` challenge で聞き、「保存」を選んでも **サインインに成功したときだけ** Keychain に入れる。古い PEM 形式の暗号化鍵は `ssh-keygen -p` で書き直すよう案内して断る。
 - 生成: Ed25519 をアプリ内で作り、公開鍵を `ssh-ed25519 AAAA… mRemote@<端末名>` の形でコピー/共有できるようにする。生成は CryptoKit の `Curve25519.Signing` で行い、OpenSSH 形式への書き出しは `SSHProtocol` に置く（試験しやすいため）。
 - 鍵の一覧は設定画面に置き、編集シートでは選ぶだけにする。鍵を消すとき、それを使っているプロファイルを示す。
 
@@ -337,7 +346,7 @@ RDP と方針が逆になる点が多いので明記する。
 | ⌘ キー（Mac/ハードウェア） | Windows/Mac のキーとして送る | **ローカルに残す**。⌘C コピー、⌘V ペースト、⌘K 消去、⌘+/- 文字の大きさ |
 | Option | Alt として送る | 設定で Meta（ESC 前置）か文字入力かを選ぶ |
 | Mac の `MacKeyboardCapture` | キーを横取りする | 端末セッションでは無効にする |
-| ソフトウェアキーボード | 既存のキーバー | 端末用のキーバー: Esc、Tab、Ctrl（ラッチ）、Alt、↑↓←→、`|` `~` `/` `-`、F1–F12（スクロール） |
+| ソフトウェアキーボード | 既存のキーバー | 端末用のキーバー: Esc、Tab、Ctrl（ラッチ）、Alt、↑↓←→、`|` `~` `/` `-`、F1–F12（スクロール）。**実装:** SwiftTerm 内蔵のアクセサリーバー（Esc、Ctrl、Tab、`~ | / -`、F1〜、矢印）をそのまま使った |
 
 - キー → バイト列（矢印の `ESC [ A`/`ESC O A` の切替、Ctrl+文字、F キー）は SwiftTerm も持っているが、キーバーと Mac のメニューから送る分は `TerminalCore` の変換表を通し、host で試験する。
 - コピー: SwiftTerm の選択範囲（長押し/ドラッグ、Mac はドラッグ）をローカルの pasteboard へ書く。リモートには何も送らない。
@@ -350,6 +359,7 @@ RDP と方針が逆になる点が多いので明記する。
 - 作業を失わない手段として、`startupCommand` に `tmux new -A -s main` などを入れる使い方をヘルプで案内する。プロファイル作成時のヒントにも出す。
 - keepalive（既定 30 秒、`libssh2_keepalive_config`）で NAT のタイムアウトを避け、相手の死活も検出する。
 - Mac はバックグラウンド制約がないので、ウインドウが背面でも接続を保つ（既存の Mac の扱いと同じ）。
+- **実装（切断を防ぐ努力）:** アプリを離れたとき、接続中のセッションがあれば `beginBackgroundTask` で iOS がくれる時間（約 30 秒）だけ動き続ける（`BackgroundGrace`、RDP にも効く）。その間も socket の読み書きと keepalive は続くので、ちょっと別のアプリを見て戻る程度なら切れない。バックグラウンドモード（音声など）を接続維持のためだけに宣言することはしない（[architecture.md](architecture.md) §8 の方針どおり）。
 - シェルが `exit` で終わったら、セッションを閉じるか、そのまま「終了しました（再接続）」を出すかを設定で選べるようにする（既定は後者。最後の出力を読めるようにするため）。
 
 ## 10. エラー
@@ -398,15 +408,28 @@ RDP と方針が逆になる点が多いので明記する。
 | **8.4 鍵** | `SSHKeyRepository`、取り込み、生成、設定画面の鍵一覧と既知のホスト一覧 | 生成した鍵で接続できる。鍵の削除で使用中のプロファイルが示される |
 | **8.5 後続** | ローカルポートフォワードと「SSH 越しの RDP」、OSC 52、Secure Enclave 鍵、ProxyJump | 個別に判断 |
 
+状況（2026-10-17）: 8.0〜8.4 と、8.5 のうちローカルポートフォワードが入った。ポートフォワードは bridge ABI 2 で、転送ごとに 127.0.0.1 で待ち受け、接続ごとに direct-tcpip チャネルで運ぶ（同時 64 接続まで、ウインドウによる背圧付き）。RDP の接続先を `localhost:<転送ポート>` にすれば「SSH 越しの RDP」になる。RDP プロファイルから SSH 接続を自動で張る連携は未実装。OSC 52、Secure Enclave 鍵、ProxyJump も未実装。
+
 8.1 は RDP の既存コードの作り替え（`EffectiveConnectionConfiguration`）を含むので、SSH の機能より先に単独でマージし、RDP の退行がないことを確かめてから次に進む。
 
 ## 14. 未決事項
 
 | 項目 | 既定案 | 決める時期 |
 |---|---|---|
-| OpenSSL の共有方法（§3.1 A/B） | A: `OpenSSL.xcframework` を切り出す | 8.0 |
-| SwiftTerm を SPM で取り込むか、ソースを vendoring するか | SPM の exact version | 8.0 |
-| iPhone で SSH を出すか | 出す（UI は iPad と同じ、キーバー必須） | 8.3 |
+| OpenSSL の共有方法（§3.1 A/B） | **決定:** FreeRDP.xcframework の OpenSSL を共有（§3.1 の実装） | 8.0 |
+| SwiftTerm を SPM で取り込むか、ソースを vendoring するか | **決定:** SPM の exact version（1.20.0） | 8.0 |
+| iPhone で SSH を出すか | **決定:** 出す | 8.3 |
 | シェル終了時の既定動作 | 画面を残して「終了しました」 | 8.3 |
 | パスフレーズを Keychain に保存するか | ユーザーに選ばせる | 8.4 |
-| ポートフォワードを 8.5 の最初にするか | する（SSH 越しの RDP） | 8.4 の後 |
+| ポートフォワードを 8.5 の最初にするか | **決定:** 入れる（優先度は高くない）。ローカル転送は実装済み | 8.4 の後 |
+
+## 15. 試験の記録（2026-10-17）
+
+| 試験 | 結果 |
+|---|---|
+| bridge 結合テスト（一時 sshd、Ed25519/RSA/ECDSA/パスフレーズ付き鍵、拒否された鍵、キャンセル、ホスト鍵拒否、challenge 中の停止、接続拒否、リサイズ、3 MiB の背圧、ポートフォワードで 1 MiB×2 接続の往復） | 合格。ASan・TSan 付きでも合格 |
+| `swift test`（SSH の設定、schema v2→v3、resolver、出力バッファ、サインイン計画、キー変換、鍵ファイルの読み書きを ssh-keygen と照合、login keychain の既知ホスト/鍵） | 合格 |
+| アプリ層ライブテスト（シミュレーター、一時 sshd）: 鍵サインイン・起動コマンド・リサイズ・シェル終了、信頼済みホスト鍵は聞かない・変わった鍵は警告し置き換えない、鍵が無ければ失敗、ポートフォワード越しに SSH バナー | 合格 |
+| アプリ層ライブテスト（macOS VM の「リモートログイン」）: keyboard-interactive、保存済みパスワード、誤った保存パスワード → 一度だけ送って入力を求める | 合格 |
+| UI ライブテスト（シミュレーター、画面なし）: 一覧 → ホスト鍵シート → 端末 → 日本語を含む入力 → メニュー → シェル終了の表示 | 合格。スクリーンショットで表示を確認 |
+| Mac Catalyst | ビルドのみ確認（作業中のデスクトップを使わないため実行はしていない） |

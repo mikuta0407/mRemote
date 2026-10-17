@@ -380,6 +380,8 @@ iPhone Duo（Xcode 27.1 beta のシミュレータ）向け。仕様は docs/ui-
 
 RDP v1 の後、次を新規 module として追加する。詳細設計と段階（8.0〜8.5）は [ssh-design.md](ssh-design.md)。
 
+状況（2026-10-17）: 8.0〜8.4 とローカルポートフォワードを実装済み（ブランチ feature/ssh-design）。試験の記録は ssh-design.md §15。
+
 - `SSHConfiguration` と credential/host key trust
 - `SSHRemoteSession`（接続 lifecycle/state/event）
 - terminal presentation、PTY size、terminal keyboard mapping

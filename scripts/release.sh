@@ -10,7 +10,8 @@
 # Usage: scripts/release.sh v0.1.0 [--no-publish]
 #
 # Run on a Mac with Xcode, from a clean tree whose HEAD is what to release,
-# with the XCFrameworks already built (see the README). --no-publish stops
+# with the XCFrameworks already built (FreeRDP, the RDP bridge and SSH; see
+# the README) and Xcode's Metal toolchain installed. --no-publish stops
 # after building, leaving the files in build/release/<tag>/.
 #
 # The Mac app is ad-hoc signed because there is no Developer ID to sign it
@@ -38,8 +39,11 @@ DERIVED="build/release/derived"
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
+# SwiftTerm runs a build-info plugin, which an unattended build has to be
+# told to trust.
 common=(
     -project mRemote.xcodeproj -scheme mRemote -configuration Release
+    -skipPackagePluginValidation
     MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
 )
 

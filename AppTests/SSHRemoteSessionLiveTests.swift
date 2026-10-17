@@ -183,3 +183,99 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
         await session.disconnect(reason: .userRequested)
     }
 }
+
+/// Password and keyboard-interactive sign-in against a host with a real
+/// account (a macOS VM's リモートログイン, say) - the loopback sshd cannot
+/// check passwords. Skipped unless TEST_RUNNER_MREMOTE_SSH_PW_HOST, _USER
+/// and _PASSWORD are given.
+final class SSHPasswordLiveTests: XCTestCase {
+    private var host = ""
+    private var user = ""
+    private var password = ""
+
+    override func setUpWithError() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let host = environment["MREMOTE_SSH_PW_HOST"], let user = environment["MREMOTE_SSH_PW_USER"],
+              let password = environment["MREMOTE_SSH_PW_PASSWORD"] else {
+            throw XCTSkip("no password host")
+        }
+        self.host = host
+        self.user = user
+        self.password = password
+    }
+
+    private func session(
+        storedPassword: String?, keyboardInteractive: Bool, password allowsPassword: Bool
+    ) throws -> SSHRemoteSession {
+        let credentials = InMemoryCredentialRepository()
+        let reference = CredentialReference()
+        if let storedPassword { try credentials.store(password: storedPassword, for: reference) }
+        let profile = ConnectionProfile(
+            displayName: "pw",
+            endpoint: RemoteEndpoint(host: host, port: 22),
+            account: RemoteAccount(username: user, credentialReference: reference),
+            configuration: .ssh(SSHConfiguration(authentication: SSHAuthentication(
+                keyID: nil, allowsKeyboardInteractive: keyboardInteractive, allowsPassword: allowsPassword))))
+        return SSHRemoteSession(
+            configuration: EffectiveProfileResolver().resolve(profile: profile, globalSettings: .default),
+            credentials: credentials, knownHosts: InMemoryKnownHostRepository(), keys: InMemorySSHKeyRepository())
+    }
+
+    /// Answers whatever is asked with `answer`, until `state`. Returns the
+    /// kinds of challenge seen.
+    private func drive(_ session: SSHRemoteSession, to state: SessionState, answer: String) async throws -> [String] {
+        var seen: [String] = []
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            if await session.state == state { return seen }
+            if let challenge = await session.pendingChallenge {
+                switch challenge {
+                case .hostKey:
+                    seen.append("hostKey")
+                    try await session.respond(to: challenge.id, with: .trustOnce)
+                case .keyboardInteractive(let prompts):
+                    seen.append("keyboardInteractive")
+                    try await session.respond(to: challenge.id, with: .keyboardInteractive(
+                        answers: prompts.prompts.map { _ in answer }))
+                case .credential(let credential):
+                    seen.append(credential.storedCredentialWasRejected ? "credential-again" : "credential")
+                    try await session.respond(to: challenge.id, with: .credential(
+                        username: user, domain: nil, password: answer, save: false))
+                default:
+                    seen.append("other")
+                    try await session.respond(to: challenge.id, with: .cancel)
+                }
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let actual = await session.state
+        XCTFail("state \(actual), expected \(state); seen \(seen)")
+        return seen
+    }
+
+    func testKeyboardInteractiveSignsIn() async throws {
+        let s = try session(storedPassword: nil, keyboardInteractive: true, password: false)
+        try await s.connect()
+        let seen = try await drive(s, to: .connected, answer: password)
+        XCTAssertTrue(seen.contains("keyboardInteractive"), "\(seen)")
+        await s.disconnect(reason: .userRequested)
+    }
+
+    func testAStoredPasswordSignsInWithoutAsking() async throws {
+        let s = try session(storedPassword: password, keyboardInteractive: false, password: true)
+        try await s.connect()
+        let seen = try await drive(s, to: .connected, answer: "unused")
+        XCTAssertEqual(seen, ["hostKey"])
+        await s.disconnect(reason: .userRequested)
+    }
+
+    /// A wrong stored password is sent once; then the user is asked, and
+    /// what they type signs in.
+    func testAWrongStoredPasswordIsAskedForInstead() async throws {
+        let s = try session(storedPassword: "wrong-\(UUID().uuidString)", keyboardInteractive: false, password: true)
+        try await s.connect()
+        let seen = try await drive(s, to: .connected, answer: password)
+        XCTAssertEqual(seen, ["hostKey", "credential-again"])
+        await s.disconnect(reason: .userRequested)
+    }
+}
