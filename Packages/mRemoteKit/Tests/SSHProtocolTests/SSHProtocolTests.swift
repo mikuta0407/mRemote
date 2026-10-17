@@ -18,13 +18,28 @@ final class SSHSignInPlannerTests: XCTestCase {
             storedPassphrase: passphrase, storedPassword: password)
     }
 
-    func testTheKeyComesFirstThenKeyboardInteractiveThenThePassword() {
+    /// A stored password goes before keyboard-interactive, which on a server
+    /// offering both would otherwise always win and ask.
+    func testTheKeyThenAStoredPasswordThenKeyboardInteractiveThenAsking() {
         var p = planner(password: "pw")
         XCTAssertEqual(p.next(offered: all, rejected: []), .publicKey(passphrase: nil))
-        XCTAssertEqual(p.next(offered: all, rejected: .publicKey), .keyboardInteractive)
+        XCTAssertEqual(p.next(offered: all, rejected: .publicKey), .password("pw"))
+        XCTAssertEqual(p.next(offered: all, rejected: .password), .keyboardInteractive)
         XCTAssertEqual(p.next(offered: all, rejected: .keyboardInteractive), .keyboardInteractive)
         XCTAssertEqual(p.next(offered: all, rejected: .keyboardInteractive), .keyboardInteractive)
-        XCTAssertEqual(p.next(offered: all, rejected: .keyboardInteractive), .password("pw"))
+        XCTAssertEqual(p.next(offered: all, rejected: .keyboardInteractive), .askPassword(storedWasRejected: false))
+    }
+
+    func testWithoutAStoredPasswordKeyboardInteractiveComesFirst() {
+        var p = planner(key: false)
+        XCTAssertEqual(p.next(offered: all, rejected: []), .keyboardInteractive)
+    }
+
+    func testARejectedTypedPasswordIsReportedAsRejected() {
+        var p = planner(key: false, keyboardInteractive: false)
+        XCTAssertEqual(p.next(offered: .password, rejected: []), .askPassword(storedWasRejected: false))
+        p.passwordTyped()
+        XCTAssertEqual(p.next(offered: .password, rejected: .password), .askPassword(storedWasRejected: true))
     }
 
     /// The stored password is sent once. After the server refuses it the user

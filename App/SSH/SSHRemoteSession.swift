@@ -181,6 +181,7 @@ actor SSHRemoteSession: TerminalSession {
         case let (.credential, .signIn(id, offered), .credential(_, _, password, save)):
             passwordToSave = save && !password.isEmpty ? password : nil
             lastSignInMethod = .password
+            planner?.passwordTyped()
             resumeAttempt()
             native?.answerSignIn(id, method: SSHSignInMethods.password.rawValue, secret: Array(password.utf8))
             _ = offered

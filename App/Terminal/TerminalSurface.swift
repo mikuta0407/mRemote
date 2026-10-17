@@ -165,6 +165,16 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
         clearScrollback()
     }
 
+    /// ⌘= as well as the menu's ⌘+, which needs Shift on a US layout:
+    /// Terminal.app takes both. No title, so it adds no menu item.
+    override var keyCommands: [UIKeyCommand]? {
+        let bigger = UIKeyCommand(input: "=", modifierFlags: .command, action: #selector(makeFontBigger))
+        bigger.wantsPriorityOverSystemBehavior = true
+        return (super.keyCommands ?? []) + [bigger]
+    }
+
+    @objc private func makeFontBigger() { adjustFontSize(by: 1) }
+
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {
         super.traitCollectionDidChange(previous)
         if settings.theme == .system,

@@ -14,7 +14,9 @@ public struct SSHSignInMethods: OptionSet, Hashable, Sendable {
 /// Decides how to answer each sign-in request (docs/ssh-design.md 7.3), so
 /// the policy lives here, testable, and the session only carries it out.
 ///
-/// The order is public key, keyboard-interactive, password. A stored secret
+/// The order is public key, a stored password, keyboard-interactive, then a
+/// password typed at the prompt: a server that offers both (macOS's sshd
+/// does) would otherwise never get the saved one. A stored secret
 /// is offered once: after the server refuses it the user is asked instead,
 /// never the same secret again - retrying a rejected password is how an
 /// account gets locked out.
@@ -98,6 +100,12 @@ public struct SSHSignInPlanner: Sendable {
         return step
     }
 
+    /// The user typed a password at `askPassword`; a refusal of it is then
+    /// reported as one, like a stored one's.
+    public mutating func passwordTyped() {
+        lastStep = .password("")
+    }
+
     /// The user declined to give the passphrase: sign in another way.
     public mutating func keySkipped(offered: SSHSignInMethods) -> Step {
         keyFinished = true
@@ -118,13 +126,15 @@ public struct SSHSignInPlanner: Sendable {
             }
             return .askPassphrase(previousWasRejected: passphraseTries > 0)
         }
+        if allowsPassword, offered.contains(.password), let storedPassword {
+            return .password(storedPassword)
+        }
         if allowsKeyboardInteractive, offered.contains(.keyboardInteractive),
            keyboardInteractiveTries < Self.maximumKeyboardInteractiveTries {
             keyboardInteractiveTries += 1
             return .keyboardInteractive
         }
         if allowsPassword, offered.contains(.password) {
-            if let storedPassword { return .password(storedPassword) }
             return .askPassword(storedWasRejected: storedPasswordWasRejected)
         }
         return .giveUp

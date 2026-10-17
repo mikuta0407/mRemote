@@ -299,7 +299,7 @@ public enum HostKeyDisposition: Hashable, Sendable {
 ### 7.3 認証の順序と challenge
 
 1. サーバーの `userauth_list` を取得する。
-2. プロファイルで許可された方式を、公開鍵 → keyboard-interactive → パスワードの順に試す。
+2. プロファイルで許可された方式を、公開鍵 → 保存済みパスワード（あれば一度だけ）→ keyboard-interactive → パスワード入力の順に試す。保存済みパスワードを keyboard-interactive より先にするのは、両方を受け付けるサーバー（macOS の sshd など）で保存したパスワードが使われず毎回尋ねられるのを避けるため。
 3. 保存済みのパスワードがあれば一度だけ使い、拒否されたら `CredentialChallenge(storedCredentialWasRejected: true)` で聞き直す。同じ秘密を繰り返し送らない（RDP と同じくアカウントロック対策）。
 4. keyboard-interactive は `KeyboardInteractiveChallenge`（name、instruction、プロンプトの配列と echo の有無）を出し、シートで複数欄を表示する。プロンプトが 1 つで "Password:" 系の場合も、保存済みパスワードの自動入力には使わない（OTP を誤って保存しないため）。
 5. 全部失敗したら `authenticationFailed`。
