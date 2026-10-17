@@ -49,15 +49,16 @@ struct SessionWorkspaceView: View {
     private let externalDisplay = ExternalDisplayCoordinator.shared
 
     /// A monitor shows the desktop, and this screen is all keyboard and
-    /// trackpad.
+    /// trackpad. A terminal has no desktop to show there: it stays on this
+    /// screen, and the monitor mirrors it as the system does.
     private var externalTakesDesktop: Bool {
-        externalDisplay.screen != nil && externalMode == .desktop
+        model.terminal == nil && externalDisplay.screen != nil && externalMode == .desktop
     }
 
     /// A monitor carries the right-hand part of one desktop spread over both
     /// screens.
     private var externalExtends: Bool {
-        externalDisplay.screen != nil && externalMode == .extend
+        model.terminal == nil && externalDisplay.screen != nil && externalMode == .extend
     }
 
     var body: some View {

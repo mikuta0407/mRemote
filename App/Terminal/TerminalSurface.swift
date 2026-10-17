@@ -269,6 +269,8 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
         super.copy(sender)
     }
 
+    private static let maximumPasteBytes = 512 * 1024
+
     func pasteText(_ text: String) {
         guard clipboardPolicy.allowsSend else { return }
         let bracketed = getTerminal().bracketedPasteMode
@@ -276,12 +278,24 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
             guard let self else { return }
             // In chunks: a large paste must not fill the input queue at once.
             let bytes = TerminalKeyEncoder.paste(text, bracketed: bracketed)
+            // Half the bridge's input queue (1 MiB): more is refused whole
+            // rather than cut off partway.
+            guard bytes.count <= Self.maximumPasteBytes else {
+                self.onSendRefused()
+                return
+            }
             var offset = 0
-            // Stops at the first refusal: a paste with a hole in it, or
-            // without its closing bracket, is worse than a short one.
+            // Stops at the first refusal: a paste with a hole in it is worse
+            // than a short one. The closing bracket still goes, or the shell
+            // would take everything typed after as pasted.
             while offset < bytes.count {
                 let end = min(offset + 4096, bytes.count)
-                guard self.sendToSession(bytes[offset..<end]) else { return }
+                guard self.sendToSession(bytes[offset..<end]) else {
+                    if bracketed, offset > 0 {
+                        _ = self.session.terminalInput.send(Array("\u{1B}[201~".utf8))
+                    }
+                    return
+                }
                 offset = end
             }
         }

@@ -73,6 +73,7 @@ struct SessionChallengeSheet: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .accessibilityIdentifier("challenge-username")
+                    .disabled(!asksForDomain && challenge.username != nil)
                 if asksForDomain {
                     TextField("ドメイン（任意）", text: $domain)
                         .textInputAutocapitalization(.never)
@@ -94,7 +95,7 @@ struct SessionChallengeSheet: View {
                         savePassword
                     )
                 }
-                .disabled(username.isEmpty || password.isEmpty)
+                .disabled(username.isEmpty || (password.isEmpty && !passwordIsOptional(challenge)))
                 .accessibilityIdentifier("challenge-connect")
             } footer: {
                 Text("パスワードは Keychain にのみ保存され、接続設定ファイルには書き込まれません。")
@@ -105,6 +106,14 @@ struct SessionChallengeSheet: View {
             username = challenge.username ?? defaultUsername ?? ""
             domain = challenge.domain ?? defaultDomain ?? ""
         }
+    }
+
+    /// SSH asks for the user name before connecting when the profile has
+    /// none; a key or the server's own prompts may sign in without a
+    /// password. Once connected it asks for the password alone, for the user
+    /// already signing in.
+    private func passwordIsOptional(_ challenge: CredentialChallenge) -> Bool {
+        !asksForDomain && challenge.username == nil
     }
 
     // MARK: - SSH

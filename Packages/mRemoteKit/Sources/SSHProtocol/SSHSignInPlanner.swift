@@ -43,6 +43,9 @@ public struct SSHSignInPlanner: Sendable {
     private let keyIsEncrypted: Bool
     private let allowsKeyboardInteractive: Bool
     private let allowsPassword: Bool
+    /// The "stored" password was typed before connecting: a refusal of it is
+    /// not reported as a saved one going stale.
+    private let storedPasswordIsTyped: Bool
 
     private var passphrase: String?
     private var storedPassword: String?
@@ -57,7 +60,8 @@ public struct SSHSignInPlanner: Sendable {
         hasKey: Bool,
         keyIsEncrypted: Bool,
         storedPassphrase: String?,
-        storedPassword: String?
+        storedPassword: String?,
+        storedPasswordIsTyped: Bool = false
     ) {
         usesKey = hasKey && authentication.keyID != nil
         self.keyIsEncrypted = keyIsEncrypted
@@ -65,6 +69,7 @@ public struct SSHSignInPlanner: Sendable {
         allowsPassword = authentication.allowsPassword
         passphrase = keyIsEncrypted ? storedPassphrase : nil
         self.storedPassword = storedPassword
+        self.storedPasswordIsTyped = storedPasswordIsTyped
     }
 
     /// The step for a request offering `offered`; `rejected` is what the
@@ -83,7 +88,7 @@ public struct SSHSignInPlanner: Sendable {
         }
         if rejected.contains(.password), case .password = lastStep {
             storedPassword = nil
-            storedPasswordWasRejected = true
+            storedPasswordWasRejected = !storedPasswordIsTyped
         }
 
         let step = choose(offered: offered, storedPasswordWasRejected: storedPasswordWasRejected)

@@ -42,6 +42,17 @@ final class SSHSignInPlannerTests: XCTestCase {
         XCTAssertEqual(p.next(offered: .password, rejected: .password), .askPassword(storedWasRejected: true))
     }
 
+    /// A password typed before connecting is tried like a stored one, but
+    /// its refusal is not reported as a saved password going stale.
+    func testARejectedPreConnectPasswordIsNotCalledSaved() {
+        var p = SSHSignInPlanner(
+            authentication: SSHAuthentication(allowsKeyboardInteractive: false),
+            hasKey: false, keyIsEncrypted: false, storedPassphrase: nil,
+            storedPassword: "typed", storedPasswordIsTyped: true)
+        XCTAssertEqual(p.next(offered: .password, rejected: []), .password("typed"))
+        XCTAssertEqual(p.next(offered: .password, rejected: .password), .askPassword(storedWasRejected: false))
+    }
+
     /// The stored password is sent once. After the server refuses it the user
     /// types one, and the stored one is never sent again.
     func testARejectedStoredPasswordIsNotRetried() {

@@ -67,6 +67,8 @@ actor SSHRemoteSession: TerminalSession {
     /// password must not end up in the Keychain.
     private var passphraseToSave: String?
     private var passwordToSave: String?
+    /// The shell opened on a password, so a password worth keeping.
+    private(set) var signedInWithPassword = false
     private var signInExhausted = false
     private var terminationCause: Termination?
     private var size = TerminalSize.standard
@@ -279,6 +281,7 @@ actor SSHRemoteSession: TerminalSession {
             passphrase = try? keys.passphrase(for: keyID)
         }
         var password = typedPassword
+        let passwordIsTyped = password != nil
         typedPassword = nil
         if password == nil, let reference = configuration.account.credentialReference {
             password = try? credentials.password(for: reference)
@@ -288,7 +291,8 @@ actor SSHRemoteSession: TerminalSession {
             hasKey: !privateKey.isEmpty,
             keyIsEncrypted: encrypted,
             storedPassphrase: passphrase,
-            storedPassword: password)
+            storedPassword: password,
+            storedPasswordIsTyped: passwordIsTyped)
     }
 
     private func apply(_ event: SSHNativeEvent) async {
@@ -423,7 +427,9 @@ actor SSHRemoteSession: TerminalSession {
            let keyID = settings.authentication.keyID {
             try? keys.storePassphrase(passphrase, for: keyID)
         }
-        if let password = passwordToSave, let reference = configuration.account.credentialReference {
+        signedInWithPassword = lastSignInMethod == .password
+        if signedInWithPassword, let password = passwordToSave,
+           let reference = configuration.account.credentialReference {
             try? credentials.store(password: password, for: reference)
         }
         passphraseToSave = nil

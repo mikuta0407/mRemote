@@ -368,7 +368,10 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
             }
             if state == .connected, let pending = credentialToSaveOnConnect {
                 credentialToSaveOnConnect = nil
-                if let profileID = configuration.profileID {
+                // Only a password the server took: a key or the server's
+                // own prompts may have signed in after it was refused.
+                let accepted = await (session as? SSHRemoteSession)?.signedInWithPassword ?? true
+                if accepted, let profileID = configuration.profileID {
                     await environment.persistCredential(
                         profileID: profileID, username: pending.username,
                         domain: pending.domain, password: pending.password)
