@@ -1,21 +1,28 @@
 import SwiftUI
 import SessionCore
 
-/// The two questions a connection can stop on. They share a sheet because
-/// they share a rule: the connection is blocked until the user answers, and
-/// dismissing without answering has to mean cancel rather than "later".
+/// The questions a connection can stop on - a password or a certificate, and
+/// for SSH a host key, the server's own prompts or a key's passphrase. They
+/// share a sheet because they share a rule: the connection is blocked until
+/// the user answers, and dismissing without answering has to mean cancel
+/// rather than "later".
 struct SessionChallengeSheet: View {
     let challenge: SessionChallenge
     let defaultUsername: String?
     let defaultDomain: String?
     let onCredential: (String, String?, String, Bool) -> Void
     let onTrust: (Bool) -> Void
+    var onKeyboardInteractive: ([String]) -> Void = { _ in }
+    var onPassphrase: (String, Bool) -> Void = { _, _ in }
+    /// SSH has no domain.
+    var asksForDomain = true
     let onCancel: () -> Void
 
     @State private var username = ""
     @State private var domain = ""
     @State private var password = ""
     @State private var savePassword = true
+    @State private var answers: [String] = []
 
     var body: some View {
         NavigationStack {
@@ -38,6 +45,12 @@ struct SessionChallengeSheet: View {
             credentialForm(credential)
         case .certificate(let certificate):
             certificateReview(certificate)
+        case .hostKey(let hostKey):
+            hostKeyReview(hostKey)
+        case .keyboardInteractive(let prompts):
+            keyboardInteractiveForm(prompts)
+        case .keyPassphrase(let passphrase):
+            passphraseForm(passphrase)
         }
     }
 
@@ -60,10 +73,12 @@ struct SessionChallengeSheet: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .accessibilityIdentifier("challenge-username")
-                TextField("ドメイン（任意）", text: $domain)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .accessibilityIdentifier("challenge-domain")
+                if asksForDomain {
+                    TextField("ドメイン（任意）", text: $domain)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("challenge-domain")
+                }
                 SecureField("パスワード", text: $password)
                     .textContentType(.password)
                     .accessibilityIdentifier("challenge-password")
@@ -90,6 +105,133 @@ struct SessionChallengeSheet: View {
             username = challenge.username ?? defaultUsername ?? ""
             domain = challenge.domain ?? defaultDomain ?? ""
         }
+    }
+
+    // MARK: - SSH
+
+    /// docs/ssh-design.md 7.1. A changed key gets its own wording and its own
+    /// buttons: it is not a first connection.
+    private func hostKeyReview(_ challenge: HostKeyChallenge) -> some View {
+        Form {
+            Section {
+                if case .changed = challenge.disposition {
+                    Label(String(localized: "ホスト鍵が以前と変わっています"), systemImage: "exclamationmark.shield.fill")
+                        .foregroundStyle(.red)
+                    Text("""
+                    この接続先には以前に信頼したホスト鍵があり、今回はそれと異なる鍵が提示されました。\
+                    サーバーを入れ直した場合にも起こりますが、通信が傍受されている場合にも同じことが起こります。\
+                    心当たりがなければ接続せず、サーバー側で鍵を確認してください。
+                    """)
+                    .font(.callout)
+                } else {
+                    Label(String(localized: "初めて接続するサーバーです"), systemImage: "key.horizontal")
+                        .foregroundStyle(.orange)
+                    Text("下のフィンガープリントが接続先のサーバーのものであることを、別の手段で確認してください。")
+                        .font(.callout)
+                }
+            }
+            Section("ホスト鍵") {
+                LabeledContent(String(localized: "challenge.computer", defaultValue: "接続先"), value: "\(challenge.host):\(challenge.port)")
+                LabeledContent("種類", value: challenge.keyType)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("フィンガープリント")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(challenge.fingerprint)
+                        .font(.system(.footnote, design: .monospaced))
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("host-key-fingerprint")
+                }
+                if case .changed(let previousType, let previous) = challenge.disposition {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("以前に信頼した鍵（\(previousType)）")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(previous)
+                            .font(.system(.footnote, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            Section {
+                Button(challenge.disposition.isIdentityChange
+                    ? String(localized: "変更を承知のうえで今回のみ接続")
+                    : String(localized: "今回のみ信頼")) {
+                    onTrust(false)
+                }
+                .accessibilityIdentifier("host-key-trust-once")
+                Button(challenge.disposition.isIdentityChange
+                    ? String(localized: "新しい鍵に置き換えて保存")
+                    : String(localized: "この接続先で常に信頼")) {
+                    onTrust(true)
+                }
+                .accessibilityIdentifier("host-key-trust-always")
+            } footer: {
+                Text("サーバーで確かめるには: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub（Mac は /etc/ssh/ の同名ファイル）")
+            }
+        }
+        .navigationTitle("ホスト鍵の確認")
+    }
+
+    private func keyboardInteractiveForm(_ challenge: KeyboardInteractiveChallenge) -> some View {
+        Form {
+            if !challenge.instruction.isEmpty || !challenge.name.isEmpty {
+                Section {
+                    if !challenge.name.isEmpty { Text(challenge.name).font(.headline) }
+                    if !challenge.instruction.isEmpty { Text(challenge.instruction).font(.callout) }
+                }
+            }
+            Section("\(challenge.host) にサインイン") {
+                ForEach(Array(challenge.prompts.enumerated()), id: \.offset) { index, prompt in
+                    let binding = Binding(
+                        get: { index < answers.count ? answers[index] : "" },
+                        set: { if index < answers.count { answers[index] = $0 } })
+                    if prompt.echo {
+                        TextField(prompt.text, text: binding)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    } else {
+                        SecureField(prompt.text, text: binding)
+                            .textContentType(.oneTimeCode)
+                    }
+                }
+            }
+            Section {
+                Button(challenge.prompts.isEmpty ? String(localized: "続ける") : String(localized: "送信")) {
+                    onKeyboardInteractive(answers)
+                }
+                .accessibilityIdentifier("challenge-kbd-submit")
+            } footer: {
+                Text("サーバーが尋ねている内容です。ここで入力したものは保存しません。")
+            }
+        }
+        .navigationTitle("サーバーからの確認")
+        .onAppear { answers = Array(repeating: "", count: challenge.prompts.count) }
+    }
+
+    private func passphraseForm(_ challenge: KeyPassphraseChallenge) -> some View {
+        Form {
+            if challenge.previousWasRejected {
+                Section {
+                    Label(String(localized: "パスフレーズが違うか、サーバーがこの鍵を受け付けませんでした。"),
+                          systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
+            }
+            Section(challenge.keyName.isEmpty ? String(localized: "鍵のパスフレーズ") : "「\(challenge.keyName)」のパスフレーズ") {
+                SecureField("パスフレーズ", text: $password)
+                    .accessibilityIdentifier("challenge-passphrase")
+                Toggle("このデバイスに保存", isOn: $savePassword)
+            }
+            Section {
+                Button("接続") { onPassphrase(password, savePassword) }
+                    .disabled(password.isEmpty)
+                    .accessibilityIdentifier("challenge-connect")
+            } footer: {
+                Text("保存すると Keychain に入り、次からは聞かれません。サインインに成功したときだけ保存します。")
+            }
+        }
+        .navigationTitle("鍵のパスフレーズ")
     }
 
     // MARK: - Certificates

@@ -10,6 +10,9 @@
 		A10000000000000000000051 /* FreeRDP.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000053 /* FreeRDP.xcframework */; };
 		A10000000000000000000052 /* mRemoteRDPBridge.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000054 /* mRemoteRDPBridge.xcframework */; };
 		A10000000000000000000055 /* AudioToolbox.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000056 /* AudioToolbox.framework */; };
+		A10000000000000000000057 /* mRemoteSSH.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000058 /* mRemoteSSH.xcframework */; };
+		A10000000000000000000059 /* SSHProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000046 /* SSHProtocol */; };
+		A1000000000000000000005A /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000047 /* SwiftTerm */; };
 		F1AAF87D304BFF50009AAF11 /* SessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000041 /* SessionCore */; };
 		F1AAF87E304BFF50009AAF11 /* Persistence in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000042 /* Persistence */; };
 		F1AAF87F304BFF50009AAF11 /* AppleAdapters in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000043 /* AppleAdapters */; };
@@ -39,6 +42,7 @@
 		A10000000000000000000020 /* mRemoteUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = mRemoteUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000053 /* FreeRDP.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FreeRDP.xcframework; path = artifacts/FreeRDP.xcframework; sourceTree = SOURCE_ROOT; };
 		A10000000000000000000054 /* mRemoteRDPBridge.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = mRemoteRDPBridge.xcframework; path = artifacts/mRemoteRDPBridge.xcframework; sourceTree = SOURCE_ROOT; };
+		A10000000000000000000058 /* mRemoteSSH.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = mRemoteSSH.xcframework; path = artifacts/mRemoteSSH.xcframework; sourceTree = SOURCE_ROOT; };
 		A10000000000000000000056 /* AudioToolbox.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AudioToolbox.framework; path = System/Library/Frameworks/AudioToolbox.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -69,6 +73,9 @@
 				F1AAF87F304BFF50009AAF11 /* AppleAdapters in Frameworks */,
 				F1AAF87E304BFF50009AAF11 /* Persistence in Frameworks */,
 				F1AAF87D304BFF50009AAF11 /* SessionCore in Frameworks */,
+				A1000000000000000000005A /* SwiftTerm in Frameworks */,
+				A10000000000000000000059 /* SSHProtocol in Frameworks */,
+				A10000000000000000000057 /* mRemoteSSH.xcframework in Frameworks */,
 				A10000000000000000000052 /* mRemoteRDPBridge.xcframework in Frameworks */,
 				A10000000000000000000051 /* FreeRDP.xcframework in Frameworks */,
 				A10000000000000000000055 /* AudioToolbox.framework in Frameworks */,
@@ -126,6 +133,7 @@
 			children = (
 				A10000000000000000000053 /* FreeRDP.xcframework */,
 				A10000000000000000000054 /* mRemoteRDPBridge.xcframework */,
+				A10000000000000000000058 /* mRemoteSSH.xcframework */,
 				A10000000000000000000056 /* AudioToolbox.framework */,
 			);
 			name = "Native Frameworks";
@@ -156,6 +164,8 @@
 				A10000000000000000000043 /* AppleAdapters */,
 				A10000000000000000000044 /* RDPProtocol */,
 				A10000000000000000000045 /* InputCore */,
+				A10000000000000000000046 /* SSHProtocol */,
+				A10000000000000000000047 /* SwiftTerm */,
 			);
 			productName = mRemote;
 			productReference = A10000000000000000000004 /* mRemote.app */;
@@ -242,6 +252,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A10000000000000000000040 /* XCLocalSwiftPackageReference "Packages/mRemoteKit" */,
+				A10000000000000000000048 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A10000000000000000000003 /* Products */;
@@ -565,6 +576,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		A10000000000000000000048 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git";
+			requirement = {
+				kind = exactVersion;
+				version = 1.20.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		A10000000000000000000041 /* SessionCore */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -585,6 +607,15 @@
 		A10000000000000000000045 /* InputCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = InputCore;
+		};
+		A10000000000000000000046 /* SSHProtocol */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SSHProtocol;
+		};
+		A10000000000000000000047 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000048 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

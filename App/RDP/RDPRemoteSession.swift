@@ -250,6 +250,10 @@ actor RDPRemoteSession: DesktopSession, AudioCapableSession, ClipboardCapableSes
             if machine.resumeAttempt() != nil {
                 emit(.stateChanged(machine.state, generation: machine.generation))
             }
+
+        case .keyboardInteractive, .passphrase:
+            // SSH answers; an RDP session never asks these.
+            throw StaleChallengeError(challengeID: challengeID)
         }
     }
 

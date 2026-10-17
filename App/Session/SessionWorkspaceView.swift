@@ -153,6 +153,13 @@ struct SessionWorkspaceView: View {
                 onTrust: { persist in
                     Task { await model.answer(persist ? .trustPersistently : .trustOnce) }
                 },
+                onKeyboardInteractive: { answers in
+                    Task { await model.answer(.keyboardInteractive(answers: answers)) }
+                },
+                onPassphrase: { passphrase, save in
+                    Task { await model.answer(.passphrase(passphrase, save: save)) }
+                },
+                asksForDomain: model.configuration.protocolKind == .rdp,
                 onCancel: {
                     Task { await model.answer(.cancel) }
                 }
@@ -185,8 +192,9 @@ struct SessionWorkspaceView: View {
     @ViewBuilder
     private func split(in size: CGSize, safeArea: EdgeInsets) -> some View {
         let isPortrait = size.height > size.width
-        // The Mac has its own keyboard and trackpad.
-        let preferenceWantsDeck = !Platform.isMac && deckPreference.showsDeck(
+        // The Mac has its own keyboard and trackpad, and a terminal has no
+        // use for a PC keyboard and a trackpad.
+        let preferenceWantsDeck = !Platform.isMac && model.terminal == nil && deckPreference.showsDeck(
             posture: hingePosture,
             isPortrait: isPortrait,
             landscapeWhenFolded: showsDeckFoldedInLandscape
@@ -227,7 +235,7 @@ struct SessionWorkspaceView: View {
                     // server for - stays clear of the island, the corners and
                     // the home indicator.
                     .padding(layout.desktopInsets)
-                    if !model.showsDesktop {
+                    if !model.showsRemoteContent {
                         status
                     }
                     endBanner
@@ -407,7 +415,37 @@ struct SessionWorkspaceView: View {
 
     @ViewBuilder
     private func desktop(touchMode: TouchPointerMode, renderSizeOverride: CGSize?) -> some View {
-        if let frameStore = model.frameStore {
+        if let terminal = model.terminal, let settings = model.configuration.ssh {
+            // An SSH session draws a terminal instead (docs/ssh-design.md 8.2).
+            TerminalSurface(
+                session: terminal,
+                settings: settings,
+                isInputEnabled: model.acceptsInput && scenePhase == .active,
+                onSendRefused: { model.terminalSendRefused() },
+                onPasteNeedsConfirmation: { text, proceed in model.confirmPaste(text, proceed: proceed) },
+                onOpenLink: { url in model.pendingLink = url },
+                onTitle: { title in model.terminalTitle = title },
+                onReady: { view in model.terminalView = view }
+            )
+            .opacity(model.showsTerminal ? 1 : 0)
+            .accessibilityIdentifier("terminal-surface")
+            .alert("複数行を貼り付けますか？", isPresented: pasteAlertBinding) {
+                Button("貼り付ける") { model.resolvePaste(confirmed: true) }
+                    .accessibilityIdentifier("paste-confirm")
+                Button("キャンセル", role: .cancel) { model.resolvePaste(confirmed: false) }
+            } message: {
+                Text("改行を含むため、貼り付けた各行がそのままコマンドとして実行されます。")
+            }
+            .alert("リンクを開きますか？", isPresented: linkAlertBinding) {
+                Button("開く") {
+                    if let url = model.pendingLink { UIApplication.shared.open(url) }
+                    model.pendingLink = nil
+                }
+                Button("キャンセル", role: .cancel) { model.pendingLink = nil }
+            } message: {
+                Text(model.pendingLink?.absoluteString ?? "")
+            }
+        } else if let frameStore = model.frameStore {
             RemoteDesktopSurface(
                 frameStore: frameStore,
                 cursorStore: model.cursorStore,
@@ -463,7 +501,7 @@ struct SessionWorkspaceView: View {
                 ProgressView().tint(.white)
             }
             if let error = model.lastError {
-                Text(Formatting.errorLabel(error))
+                Text(Formatting.errorLabel(error, protocolKind: model.configuration.protocolKind))
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.orange)
@@ -529,6 +567,14 @@ struct SessionWorkspaceView: View {
         }
     }
 
+    private var pasteAlertBinding: Binding<Bool> {
+        Binding(get: { model.pendingPaste != nil }, set: { if !$0 { model.resolvePaste(confirmed: false) } })
+    }
+
+    private var linkAlertBinding: Binding<Bool> {
+        Binding(get: { model.pendingLink != nil }, set: { if !$0 { model.pendingLink = nil } })
+    }
+
     private func floatingMenuButton(
         softwareKeyboardShown: Bool, showsDeck: Bool, foldWantsDeck: Bool, keyboardButton: Bool
     ) -> some View {
@@ -548,7 +594,11 @@ struct SessionWorkspaceView: View {
     /// comes up. A deck 自動 brought up for the fold is only put aside, so
     /// unfolding and folding again still brings it.
     private func toggleKeyboard(showsDeck: Bool, foldWantsDeck: Bool) {
-        if model.softwareKeyboard.isVisible {
+        if model.terminal != nil {
+            // The terminal is its own text input; its keyboard comes with
+            // SwiftTerm's Esc/Ctrl/Tab/arrow bar.
+            model.toggleTerminalKeyboard()
+        } else if model.softwareKeyboard.isVisible {
             model.softwareKeyboard.hide()
         } else if showsDeck {
             if foldWantsDeck {
@@ -577,7 +627,7 @@ struct SessionWorkspaceView: View {
     /// device would all just look like a frozen desktop.
     @ViewBuilder
     private var endBanner: some View {
-        if model.showsDesktop, let banner = model.stateBanner {
+        if model.showsRemoteContent, let banner = model.stateBanner {
             VStack(spacing: 10) {
                 if banner.busy {
                     ProgressView()

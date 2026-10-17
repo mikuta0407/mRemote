@@ -74,11 +74,32 @@ enum Formatting {
             return String(localized: "操作がなかったため、サーバーが切断しました。")
         case .signInTimeout:
             return String(localized: "サインインに時間がかかりすぎたため、サーバーが切断しました。")
+        case .shellExited(let status):
+            if let status, status != 0 {
+                return String(localized: "シェルが終了しました（終了コード \(status)）。")
+            }
+            return String(localized: "シェルが終了しました。")
         }
     }
 
     /// What went wrong and what to try, in that order. Technical detail
     /// from the backend stays in English and goes last, for reports.
+    static func errorLabel(_ error: RemoteSessionError, protocolKind: ProtocolKind) -> String {
+        guard protocolKind == .ssh else { return errorLabel(error) }
+        switch error {
+        case .connectionRefused:
+            return String(localized: "接続を拒否されました。ポート番号と、リモート側で SSH サーバー（Mac なら「リモートログイン」）が有効になっているかを確認してください。")
+        case .connectionTimedOut:
+            return String(localized: "応答がないまま時間切れになりました。リモートの電源とネットワーク、ファイアウォールで SSH（通常 22）が許可されているかを確認してください。")
+        case .securityNegotiationFailed:
+            return String(localized: "サーバーと共通の暗号方式がありません。サーバーが古い方式（SHA-1、DSA、CBC など）しか受け付けていない可能性があります。サーバーの OpenSSH を更新してください。")
+        case .authenticationFailed:
+            return String(localized: "サインインできませんでした。ユーザー名と、鍵・パスワードを確認してください。鍵を使う場合は、公開鍵がサーバーの ~/.ssh/authorized_keys に登録されている必要があります。")
+        default:
+            return errorLabel(error)
+        }
+    }
+
     static func errorLabel(_ error: RemoteSessionError) -> String {
         switch error {
         case .nameResolutionFailed:
@@ -99,6 +120,8 @@ enum Formatting {
             return String(localized: "このアカウントはリモート接続を許可されていません。リモート側で「リモートデスクトップ ユーザー」に加えるか、管理者に確認してください。")
         case .certificateRejected:
             return String(localized: "サーバー証明書を信頼しなかったため中止しました。接続し直すと、もう一度確認できます。")
+        case .hostKeyRejected:
+            return String(localized: "ホスト鍵を信頼しなかったため中止しました。接続し直すと、もう一度確認できます。")
         case .userCancelled:
             return String(localized: "接続を中止しました。")
         case .protocolFailure(let detail):

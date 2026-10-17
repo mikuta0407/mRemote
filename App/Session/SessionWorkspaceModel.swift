@@ -89,6 +89,17 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
     /// exactly that case, and the workspace has to render something else
     /// rather than assume a framebuffer.
     private let desktop: (any DesktopSession)?
+    /// Set instead for an SSH session (docs/ssh-design.md 8.2).
+    let terminal: (any TerminalSession)?
+    /// The terminal on screen, for the menu's font size and clear commands.
+    @ObservationIgnored weak var terminalView: SessionTerminalView?
+    /// What the shell put in the title (OSC 0/2), shown in the window title.
+    var terminalTitle: String?
+    /// A multi-line paste waiting for the user to confirm it.
+    private(set) var pendingPaste: String?
+    @ObservationIgnored private var pendingPasteAction: (() -> Void)?
+    /// A link in the terminal the user tapped, waiting for confirmation.
+    var pendingLink: URL?
     /// Cancelled in `disconnect`, which is the only path that ends a session.
     /// There is no `deinit` cleanup because the model is main-actor isolated
     /// and `deinit` is not: the environment owns the model until the session
@@ -121,6 +132,7 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
         self.environment = environment
         self.session = session
         self.desktop = session as? any DesktopSession
+        self.terminal = session as? any TerminalSession
         self.configuration = configuration
         self.id = session.id
         self.displayName = configuration.displayName
@@ -155,6 +167,13 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
     private(set) var thumbnail: UIImage?
 
     func captureThumbnail() {
+        if let terminalView, terminalView.bounds.width > 0 {
+            let renderer = UIGraphicsImageRenderer(bounds: terminalView.bounds)
+            thumbnail = renderer.image { _ in
+                terminalView.drawHierarchy(in: terminalView.bounds, afterScreenUpdates: false)
+            }
+            return
+        }
         guard let frame = frameStore?.latestSurface else { return }
         thumbnail = SessionThumbnail.make(from: frame)
     }
@@ -225,7 +244,7 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
             return StateBanner(
                 title: statusText,
                 symbol: "arrow.triangle.2.circlepath",
-                detail: lastError.map(Formatting.errorLabel),
+                detail: lastError.map { Formatting.errorLabel($0, protocolKind: configuration.protocolKind) },
                 busy: true
             )
         }
@@ -234,7 +253,7 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
             return StateBanner(
                 title: String(localized: "接続が切れました"),
                 symbol: "exclamationmark.triangle",
-                detail: lastError.map(Formatting.errorLabel),
+                detail: lastError.map { Formatting.errorLabel($0, protocolKind: configuration.protocolKind) },
                 offersReconnect: true
             )
         case .disconnected:
@@ -254,6 +273,45 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
 
     var showsDesktop: Bool { desktop != nil && (state == .connected || desktopSize != nil) }
 
+    /// The terminal stays on screen after the connection goes, with what the
+    /// shell printed last.
+    var showsTerminal: Bool { terminal != nil && (state == .connected || hadConnected) }
+
+    var showsRemoteContent: Bool { showsDesktop || showsTerminal }
+
+    // MARK: - Terminal
+
+    func toggleTerminalKeyboard() {
+        guard let terminalView else { return }
+        if terminalView.isFirstResponder {
+            terminalView.resignFirstResponder()
+        } else {
+            terminalView.becomeFirstResponder()
+        }
+    }
+
+    func terminalSendRefused() {
+        clipboardMessage = String(localized: "送信が詰まっています。接続を確認してください。")
+    }
+
+    func confirmPaste(_ text: String, proceed: @escaping () -> Void) {
+        pendingPaste = text
+        pendingPasteAction = proceed
+    }
+
+    func resolvePaste(confirmed: Bool) {
+        let action = pendingPasteAction
+        pendingPaste = nil
+        pendingPasteAction = nil
+        if confirmed { action?() }
+    }
+
+    /// From the menu: what the clipboard holds, into the terminal.
+    func pasteIntoTerminal() {
+        guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
+        terminalView?.pasteText(text)
+    }
+
     func start() async {
         let stream = await session.controlEvents()
         eventTask = Task { [weak self] in
@@ -261,7 +319,8 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
                 await self?.apply(event)
             }
         }
-        if Platform.isMac, clipboardPolicy != .disabled {
+        // A terminal has no remote clipboard to keep in step.
+        if Platform.isMac, clipboardPolicy != .disabled, session is any ClipboardCapableSession {
             watchMacPasteboard()
         }
         do {

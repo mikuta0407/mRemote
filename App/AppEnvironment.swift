@@ -14,6 +14,9 @@ import SessionCore
 final class AppEnvironment {
     let credentials: any CredentialRepository
     let trust: any TrustRepository
+    /// SSH: the host keys the user trusted, and the private keys.
+    let knownHosts: any KnownHostRepository
+    let sshKeys: any SSHKeyRepository
     let sessions: SessionManager
     let factories: SessionFactoryRegistry
 
@@ -63,11 +66,15 @@ final class AppEnvironment {
         store: any ProfileStore,
         credentials: any CredentialRepository,
         trust: any TrustRepository,
+        knownHosts: any KnownHostRepository = InMemoryKnownHostRepository(),
+        sshKeys: any SSHKeyRepository = InMemorySSHKeyRepository(),
         factories: SessionFactoryRegistry
     ) {
         self.store = store
         self.credentials = credentials
         self.trust = trust
+        self.knownHosts = knownHosts
+        self.sshKeys = sshKeys
         self.factories = factories
         self.sessions = SessionManager()
         memoryWarningObserver = NotificationCenter.default.addObserver(
@@ -79,9 +86,8 @@ final class AppEnvironment {
         }
     }
 
-    /// The shipping graph. The only place that knows RDP exists: everything
-    /// above asks the registry for a session by protocol kind, so Phase 8's
-    /// SSH session is one more registration here.
+    /// The shipping graph. The only place that knows RDP and SSH exist:
+    /// everything above asks the registry for a session by protocol kind.
     static func live() -> AppEnvironment {
         if UITestConfiguration.isActive {
             return UITestConfiguration.makeEnvironment()
@@ -98,12 +104,17 @@ final class AppEnvironment {
         let keychain = KeychainStore.detect()
         let credentials = KeychainCredentialRepository(store: keychain)
         let trust = KeychainTrustRepository(store: keychain)
+        let knownHosts = KeychainKnownHostRepository(store: keychain)
+        let sshKeys = KeychainSSHKeyRepository(store: keychain)
         return AppEnvironment(
             store: store,
             credentials: credentials,
             trust: trust,
+            knownHosts: knownHosts,
+            sshKeys: sshKeys,
             factories: SessionFactoryRegistry(factories: [
-                RDPSessionFactory(credentials: credentials, trust: trust)
+                RDPSessionFactory(credentials: credentials, trust: trust),
+                SSHSessionFactory(credentials: credentials, knownHosts: knownHosts, keys: sshKeys),
             ])
         )
     }
