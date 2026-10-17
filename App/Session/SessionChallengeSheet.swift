@@ -218,7 +218,9 @@ struct SessionChallengeSheet: View {
                         .foregroundStyle(.orange)
                 }
             }
-            Section(challenge.keyName.isEmpty ? String(localized: "鍵のパスフレーズ") : "「\(challenge.keyName)」のパスフレーズ") {
+            Section(challenge.keyName.isEmpty
+                ? String(localized: "鍵のパスフレーズ")
+                : String(localized: "「\(challenge.keyName)」のパスフレーズ")) {
                 SecureField("パスフレーズ", text: $password)
                     .accessibilityIdentifier("challenge-passphrase")
                 Toggle("このデバイスに保存", isOn: $savePassword)

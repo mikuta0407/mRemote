@@ -170,6 +170,16 @@
         }
       }
     },
+    "%lld 秒ごと": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Every %lld Seconds"
+          }
+        }
+      }
+    },
     "%lld%%": {
       "shouldTranslate": false
     },
@@ -179,6 +189,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "(unreadable)"
+          }
+        }
+      }
+    },
+    "-----BEGIN OPENSSH PRIVATE KEY----- から始まる秘密鍵を貼り付けてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste a private key that begins with -----BEGIN OPENSSH PRIVATE KEY-----."
           }
         }
       }
@@ -195,6 +215,36 @@
     },
     "100%": {
       "shouldTranslate": false
+    },
+    "3・4本指のスワイプ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Three- and Four-Finger Swipes"
+          }
+        }
+      }
+    },
+    "3本指・4本指は2本指と同じくスクロールになります": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Three and four fingers scroll, the same as two fingers."
+          }
+        }
+      }
+    },
+    "Alt": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alt"
+          }
+        }
+      }
     },
     "App 切り替えに使われます。Win+Tab はキーバーの Win を押してから Tab。": {
       "localizations": {
@@ -232,6 +282,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Connect with ${applicationName}"
+          }
+        }
+      }
+    },
+    "Control": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Control"
           }
         }
       }
@@ -329,6 +389,46 @@
         }
       }
     },
+    "Mac のトラックパッドと同じように、指に合わせて画面が動きます。macOS の非公開の仕組みを使うため、macOS のバージョンによっては動きません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The screen follows your fingers, as on a Mac trackpad. This relies on private macOS interfaces, so it may not work on some macOS versions."
+          }
+        }
+      }
+    },
+    "Mac 同士の拡張を使います。⌘ は ⌘ のまま、Fn や左右の修飾キー、トラックパッドの滑らかなスクロールもそのまま届きます。拡張に対応しないサーバーには通常の RDP で接続します。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uses Mac-to-Mac extensions: ⌘ stays ⌘, and Fn, left and right modifier keys, and smooth trackpad scrolling arrive as is. Servers without the extensions are connected with standard RDP."
+          }
+        }
+      }
+    },
+    "Mac 拡張": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac Extensions"
+          }
+        }
+      }
+    },
+    "Meta（Esc を前置）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meta (Esc Prefix)"
+          }
+        }
+      }
+    },
     "NLA 必須": {
       "localizations": {
         "en": {
@@ -345,6 +445,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "OK"
+          }
+        }
+      }
+    },
+    "Option キー": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Option Key"
+          }
+        }
+      }
+    },
+    "Option キーを Meta として送る": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use Option as Meta Key"
           }
         }
       }
@@ -369,6 +489,16 @@
         }
       }
     },
+    "RemoteApp": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RemoteApp"
+          }
+        }
+      }
+    },
     "SHA-256 フィンガープリント": {
       "localizations": {
         "en": {
@@ -379,12 +509,52 @@
         }
       }
     },
+    "SSH": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH"
+          }
+        }
+      }
+    },
+    "SSH の接続先が「全体設定に従う」ときに使う値です。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used by SSH computers set to “Use Default”."
+          }
+        }
+      }
+    },
+    "SSH の鍵": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH Keys"
+          }
+        }
+      }
+    },
     "Spotlight に使われます。Win+Space はキーバーの Win を押してから Space。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Opens Spotlight. For Win+Space, tap Win on the key bar, then Space."
+          }
+        }
+      }
+    },
+    "TERM": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TERM"
           }
         }
       }
@@ -411,6 +581,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Wake-on-LAN"
+          }
+        }
+      }
+    },
+    "Windows / 標準の RDP": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Windows / Standard RDP"
           }
         }
       }
@@ -521,6 +701,46 @@
         }
       }
     },
+    "iPhone/iPad をしばらく閉じると接続は切れ、シェルも終わります。tmux や screen を起動しておくと、つなぎ直したときに作業の続きから始められます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If the iPhone or iPad is closed for a while, the connection drops and the shell ends. Start tmux or screen to pick up where you left off when you reconnect."
+          }
+        }
+      }
+    },
+    "mRemote の鍵": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mRemote Key"
+          }
+        }
+      }
+    },
+    "macOS（macos-rdp-server）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS (macos-rdp-server)"
+          }
+        }
+      }
+    },
+    "macos-rdp-server を動かす Mac に接続するときは「macOS」を選ぶと、Mac のキー操作とスクロールがそのまま届きます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When connecting to a Mac running macos-rdp-server, choose “macOS” so Mac keystrokes and scrolling arrive as is."
+          }
+        }
+      }
+    },
     "profile-editor.section.computer": {
       "localizations": {
         "en": {
@@ -549,6 +769,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "⚠︎ %@ is connected with legacy RDP security"
+          }
+        }
+      }
+    },
+    "「%@」のパスフレーズ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passphrase for “%@”"
+          }
+        }
+      }
+    },
+    "「%@」をこのデバイスから削除します。元に戻せません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” will be deleted from this device. This can't be undone."
+          }
+        }
+      }
+    },
+    "「%@」を使っている接続先があります: %@。削除すると、これらは鍵でサインインできなくなります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” is used by these computers: %@. If you delete it, they can no longer sign in with a key."
           }
         }
       }
@@ -693,6 +943,16 @@
         }
       }
     },
+    "この接続先には以前に信頼したホスト鍵があり、今回はそれと異なる鍵が提示されました。サーバーを入れ直した場合にも起こりますが、通信が傍受されている場合にも同じことが起こります。心当たりがなければ接続せず、サーバー側で鍵を確認してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You trusted a different host key for this computer before. This happens when the server is reinstalled, but it also happens when the connection is being intercepted. If you don't know why it changed, don't connect; check the key on the server."
+          }
+        }
+      }
+    },
     "この接続先には以前に承認した証明書があり、今回はそれと異なる証明書が提示されました。サーバーの証明書を更新した場合にも起こりますが、通信が傍受されている場合にも同じことが起こります。心当たりがなければ承認せず、サーバー側で証明書を確認してください。": {
       "localizations": {
         "en": {
@@ -719,6 +979,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "One desktop over two screens: this screen on the left, the monitor on the right. Move the pointer across them with a trackpad or mouse."
+          }
+        }
+      }
+    },
+    "この種類の鍵（%@）には対応していません。Ed25519、ECDSA、RSA の鍵を使ってください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This key type (%@) isn't supported. Use an Ed25519, ECDSA, or RSA key."
           }
         }
       }
@@ -809,6 +1079,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nearly Hide"
+          }
+        }
+      }
+    },
+    "まだありません。SSH で接続し、ホスト鍵を「常に信頼」するとここに並びます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "None yet. Host keys you choose to always trust when connecting over SSH appear here."
           }
         }
       }
@@ -1053,6 +1333,16 @@
         }
       }
     },
+    "キー（⌘・Fn・左右の修飾キー）、ポインタ、スクロールを Mac のまま送っています。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keys (⌘, Fn, left and right modifiers), pointer, and scrolling are sent as on a Mac."
+          }
+        }
+      }
+    },
     "クリップボード": {
       "localizations": {
         "en": {
@@ -1123,6 +1413,16 @@
         }
       }
     },
+    "コピー": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy"
+          }
+        }
+      }
+    },
     "コマンド": {
       "localizations": {
         "en": {
@@ -1133,12 +1433,82 @@
         }
       }
     },
+    "サインイン": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign In"
+          }
+        }
+      }
+    },
+    "サインインできませんでした。ユーザー名と、鍵・パスワードを確認してください。鍵を使う場合は、公開鍵がサーバーの ~/.ssh/authorized_keys に登録されている必要があります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't sign in. Check the user name and the key or password. To use a key, its public key must be in ~/.ssh/authorized_keys on the server."
+          }
+        }
+      }
+    },
     "サインインに時間がかかりすぎたため、サーバーが切断しました。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "The server disconnected because signing in took too long."
+          }
+        }
+      }
+    },
+    "サインインの方法がありません。鍵を選ぶか、パスワードかサーバーの質問を許可してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No sign-in method is available. Choose a key, or allow passwords or server prompts."
+          }
+        }
+      }
+    },
+    "サーバー": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server"
+          }
+        }
+      }
+    },
+    "サーバーからの確認": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server Prompt"
+          }
+        }
+      }
+    },
+    "サーバーが尋ねている内容です。ここで入力したものは保存しません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These questions come from the server. Nothing you enter here is saved."
+          }
+        }
+      }
+    },
+    "サーバーで確かめるには: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub（Mac は /etc/ssh/ の同名ファイル）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "To check on the server: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub (on a Mac, the file of the same name in /etc/ssh/)"
           }
         }
       }
@@ -1159,6 +1529,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "The server and this app have no security protocol in common. The server may refuse TLS/NLA and accept only legacy RDP security. If needed, you can allow it explicitly under Security Protocol in the computer's settings."
+          }
+        }
+      }
+    },
+    "サーバーと共通の暗号方式がありません。サーバーが古い方式（SHA-1、DSA、CBC など）しか受け付けていない可能性があります。サーバーの OpenSSH を更新してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The server and this app have no encryption algorithm in common. The server may accept only outdated algorithms (such as SHA-1, DSA, or CBC). Update OpenSSH on the server."
+          }
+        }
+      }
+    },
+    "サーバーの質問に答えてサインイン": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign In by Answering Server Prompts"
           }
         }
       }
@@ -1203,12 +1593,52 @@
         }
       }
     },
+    "シェルが終了したら": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When the Shell Exits"
+          }
+        }
+      }
+    },
+    "シェルが終了しました。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The shell exited."
+          }
+        }
+      }
+    },
+    "シェルが終了しました（終了コード %d）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The shell exited (exit code %d)."
+          }
+        }
+      }
+    },
     "システムが信頼していない証明書です": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "The system doesn't trust this certificate"
+          }
+        }
+      }
+    },
+    "システムに合わせる": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Match System"
           }
         }
       }
@@ -1239,6 +1669,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Add Shortcut"
+          }
+        }
+      }
+    },
+    "スクロールバックを消去": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear Scrollback"
           }
         }
       }
@@ -1303,6 +1743,16 @@
         }
       }
     },
+    "セッションを閉じる": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close Session"
+          }
+        }
+      }
+    },
     "セッションメニュー": {
       "localizations": {
         "en": {
@@ -1333,6 +1783,16 @@
         }
       }
     },
+    "タッチで選択": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select by Touch"
+          }
+        }
+      }
+    },
     "タッチは Windows へ送りません。1 本指で表示を動かし、ピンチで拡大、ダブルタップで全体表示と 100% を切り替えます。": {
       "localizations": {
         "en": {
@@ -1359,6 +1819,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tap to send it alone. Hold to combine it with the next key."
+          }
+        }
+      }
+    },
+    "ダーク": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dark"
           }
         }
       }
@@ -1493,12 +1963,52 @@
         }
       }
     },
+    "パスフレーズ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passphrase"
+          }
+        }
+      }
+    },
+    "パスフレーズが違うか、サーバーがこの鍵を受け付けませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The passphrase is wrong, or the server didn't accept this key."
+          }
+        }
+      }
+    },
+    "パスフレーズ付き": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passphrase Protected"
+          }
+        }
+      }
+    },
     "パスワード": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Password"
+          }
+        }
+      }
+    },
+    "パスワードでのサインイン": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign In with Password"
           }
         }
       }
@@ -1533,12 +2043,42 @@
         }
       }
     },
+    "パスワード（任意）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Password (Optional)"
+          }
+        }
+      }
+    },
+    "ピンチ・回転・2本指ダブルタップを Mac に送る": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send Pinch, Rotate, and Two-Finger Double-Tap to Mac"
+          }
+        }
+      }
+    },
     "ファイル App の「このiPhone内 › mRemote」が、Windows のエクスプローラーにドライブとして見えます。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "\"On My iPhone › mRemote\" in the Files app appears as a drive in Windows File Explorer."
+          }
+        }
+      }
+    },
+    "ファイルから読み込む": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import from File"
           }
         }
       }
@@ -1553,12 +2093,32 @@
         }
       }
     },
+    "ファイルを読めませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't read the file."
+          }
+        }
+      }
+    },
     "ファイルを貼り付けで送る…": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Send Files by Pasting…"
+          }
+        }
+      }
+    },
+    "フィンガープリント": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fingerprint"
           }
         }
       }
@@ -1663,6 +2223,46 @@
         }
       }
     },
+    "ホスト鍵": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Host Key"
+          }
+        }
+      }
+    },
+    "ホスト鍵が以前と変わっています": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The host key has changed"
+          }
+        }
+      }
+    },
+    "ホスト鍵の確認": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verify Host Key"
+          }
+        }
+      }
+    },
+    "ホスト鍵を信頼しなかったため中止しました。接続し直すと、もう一度確認できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopped because the host key wasn't trusted. Connect again to review it again."
+          }
+        }
+      }
+    },
     "ホーム画面に使われます。Win+H はキーバーの Win を押してから H。": {
       "localizations": {
         "en": {
@@ -1679,6 +2279,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "Port"
+          }
+        }
+      }
+    },
+    "ポート転送": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Port Forwarding"
+          }
+        }
+      }
+    },
+    "ポート転送 localhost:%u は使用中のため開けませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't open port forward localhost:%u because the port is in use."
+          }
+        }
+      }
+    },
+    "ポート転送 localhost:%u を開けませんでした（%d）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't open port forward localhost:%u (%d)."
           }
         }
       }
@@ -1769,6 +2399,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Licenses"
+          }
+        }
+      }
+    },
+    "ライト": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Light"
           }
         }
       }
@@ -1883,6 +2523,16 @@
         }
       }
     },
+    "リンクを開きますか？": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Link?"
+          }
+        }
+      }
+    },
     "レイアウト": {
       "localizations": {
         "en": {
@@ -1919,6 +2569,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Allow Legacy RDP Security?"
+          }
+        }
+      }
+    },
+    "ローカル": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local"
           }
         }
       }
@@ -1983,6 +2643,16 @@
         }
       }
     },
+    "下のフィンガープリントが接続先のサーバーのものであることを、別の手段で確認してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm by some other means that the fingerprint below belongs to the server."
+          }
+        }
+      }
+    },
     "今回のみ信頼": {
       "localizations": {
         "en": {
@@ -2003,6 +2673,16 @@
         }
       }
     },
+    "以前に信頼した鍵（%@）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Previously Trusted Key (%@)"
+          }
+        }
+      }
+    },
     "以前に承認したフィンガープリント": {
       "localizations": {
         "en": {
@@ -2013,12 +2693,32 @@
         }
       }
     },
+    "低画質・省データ（15fps）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Low Quality, Data Saver (15 fps)"
+          }
+        }
+      }
+    },
     "何もしない": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Nothing"
+          }
+        }
+      }
+    },
+    "使わない": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "None"
           }
         }
       }
@@ -2043,12 +2743,32 @@
         }
       }
     },
+    "保存すると Keychain に入り、次からは聞かれません。サインインに成功したときだけ保存します。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved passphrases go in the Keychain, so you won't be asked again. It's saved only after a successful sign-in."
+          }
+        }
+      }
+    },
     "保存済みのパスワードが拒否されました。もう一度入力してください。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "The saved password was rejected. Enter it again."
+          }
+        }
+      }
+    },
+    "保存済みのホスト鍵を読めませんでした（%@）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't read the saved host keys (%@)"
           }
         }
       }
@@ -2089,6 +2809,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Input and audio go only to the session on screen."
+          }
+        }
+      }
+    },
+    "入力ソース": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Input Source"
           }
         }
       }
@@ -2163,6 +2893,36 @@
         }
       }
     },
+    "公開鍵をコピー": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy Public Key"
+          }
+        }
+      }
+    },
+    "公開鍵をコピーしました。サーバーの ~/.ssh/authorized_keys に追加してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copied the public key. Add it to ~/.ssh/authorized_keys on the server."
+          }
+        }
+      }
+    },
+    "公開鍵を共有": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Share Public Key"
+          }
+        }
+      }
+    },
     "共有しない": {
       "localizations": {
         "en": {
@@ -2189,6 +2949,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Reconnect"
+          }
+        }
+      }
+    },
+    "再接続すると新しいシェルが始まります。クリップボードは、端末への貼り付け（送信）と端末からのコピー（受信）を許可するかどうかです。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconnecting starts a new shell. Clipboard controls whether pasting into the terminal (send) and copying from it (receive) are allowed."
           }
         }
       }
@@ -2259,6 +3029,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Disconnected"
+          }
+        }
+      }
+    },
+    "初めて接続するサーバーです": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This is a new server"
           }
         }
       }
@@ -2423,6 +3203,16 @@
         }
       }
     },
+    "古い形式で暗号化された鍵です。Mac などで ssh-keygen -p -f <ファイル> を実行して OpenSSH 形式に書き直してから読み込んでください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This key is encrypted in an old format. Run ssh-keygen -p -f <file> on a Mac or other computer to rewrite it in OpenSSH format, then import it."
+          }
+        }
+      }
+    },
     "右": {
       "localizations": {
         "en": {
@@ -2469,6 +3259,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Name"
+          }
+        }
+      }
+    },
+    "名前を変更": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename"
           }
         }
       }
@@ -2533,6 +3333,16 @@
         }
       }
     },
+    "変更": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename"
+          }
+        }
+      }
+    },
     "変更を承知のうえで今回のみ接続": {
       "localizations": {
         "en": {
@@ -2549,6 +3359,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "External Display"
+          }
+        }
+      }
+    },
+    "大きく": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bigger"
           }
         }
       }
@@ -2593,6 +3413,16 @@
         }
       }
     },
+    "小さく": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Smaller"
+          }
+        }
+      }
+    },
     "左": {
       "localizations": {
         "en": {
@@ -2609,6 +3439,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Left Click"
+          }
+        }
+      }
+    },
+    "左右でデスクトップを切り替え（⌃← / ⌃→）、上で Mission Control（⌃↑）、下でアプリ Exposé（⌃↓）。Mac 側でこのショートカットが有効になっている必要があります": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Left and right switch desktops (⌃← / ⌃→), up opens Mission Control (⌃↑), and down opens App Exposé (⌃↓). These shortcuts must be turned on on the Mac."
           }
         }
       }
@@ -2649,6 +3489,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "The connection timed out with no response. Check that the remote computer is on and reachable, and that its firewall allows RDP (usually port 3389)."
+          }
+        }
+      }
+    },
+    "応答がないまま時間切れになりました。リモートの電源とネットワーク、ファイアウォールで SSH（通常 22）が許可されているかを確認してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection timed out with no response. Check that the remote computer is on and reachable, and that its firewall allows SSH (usually port 22)."
           }
         }
       }
@@ -2833,6 +3683,16 @@
         }
       }
     },
+    "指に合わせて動かす（実験的）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Follow Fingers (Experimental)"
+          }
+        }
+      }
+    },
     "接続": {
       "localizations": {
         "en": {
@@ -2853,12 +3713,32 @@
         }
       }
     },
+    "接続している間、この端末の localhost:ローカルポート への接続を、SSH サーバーから見た転送先へつなぎます。SSH サーバーの奥にある PC へ RDP するときは、RDP の接続先を localhost とそのポートにします。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "While connected, connections to localhost:local port on this device are forwarded to the destination as seen from the SSH server. To use RDP with a PC behind the SSH server, set the RDP computer to localhost and that port."
+          }
+        }
+      }
+    },
     "接続するときに起動する": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Wake When Connecting"
+          }
+        }
+      }
+    },
+    "接続の確認（keepalive）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keepalive"
           }
         }
       }
@@ -2879,6 +3759,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Connection cancelled."
+          }
+        }
+      }
+    },
+    "接続を拒否されました。ポート番号と、リモート側で SSH サーバー（Mac なら「リモートログイン」）が有効になっているかを確認してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection was refused. Check the port number and that the SSH server (“Remote Login” on a Mac) is turned on on the remote computer."
           }
         }
       }
@@ -2973,6 +3863,16 @@
         }
       }
     },
+    "接続先の種類": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Computer Type"
+          }
+        }
+      }
+    },
     "接続先を IP アドレスで指定したため、証明書のホスト名は検証されていません。Windows の自己署名証明書はコンピューター名しか持たないため、IP 指定では照合が成立しません。識別の根拠はフィンガープリントだけです。": {
       "localizations": {
         "en": {
@@ -3033,6 +3933,16 @@
         }
       }
     },
+    "接続後に実行するコマンド": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Command to Run After Connecting"
+          }
+        }
+      }
+    },
     "接続方式": {
       "localizations": {
         "en": {
@@ -3069,6 +3979,66 @@
           "stringUnit": {
             "state": "translated",
             "value": "Buttons When Idle"
+          }
+        }
+      }
+    },
+    "改行を含むため、貼り付けた各行がそのままコマンドとして実行されます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The text contains line breaks, so each pasted line will run as a command."
+          }
+        }
+      }
+    },
+    "文字の入力": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type Characters"
+          }
+        }
+      }
+    },
+    "文字の大きさ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Text Size"
+          }
+        }
+      }
+    },
+    "文字の大きさを標準に": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actual Size"
+          }
+        }
+      }
+    },
+    "文字を大きく": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bigger"
+          }
+        }
+      }
+    },
+    "文字を小さく": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Smaller"
           }
         }
       }
@@ -3113,12 +4083,62 @@
         }
       }
     },
+    "新しい鍵に置き換えて保存": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replace with the New Key"
+          }
+        }
+      }
+    },
+    "新しい鍵を作成（Ed25519）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create New Key (Ed25519)"
+          }
+        }
+      }
+    },
+    "既知のホスト鍵": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Known Hosts"
+          }
+        }
+      }
+    },
     "日本語 106/109": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Japanese 106/109"
+          }
+        }
+      }
+    },
+    "日本語などの入力モード": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Japanese or Other Input Mode"
+          }
+        }
+      }
+    },
+    "映像": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video"
           }
         }
       }
@@ -3199,6 +4219,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Natural"
+          }
+        }
+      }
+    },
+    "標準（30fps）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Standard (30 fps)"
           }
         }
       }
@@ -3353,6 +4383,16 @@
         }
       }
     },
+    "画面を残す": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep Screen"
+          }
+        }
+      }
+    },
     "画面終了": {
       "localizations": {
         "en": {
@@ -3403,6 +4443,36 @@
         }
       }
     },
+    "秘密鍵として読めませんでした。公開鍵（.pub）ではなく秘密鍵のファイルを選んでください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't read this as a private key. Choose the private key file, not the public key (.pub)."
+          }
+        }
+      }
+    },
+    "秘密鍵を貼り付け": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste Private Key"
+          }
+        }
+      }
+    },
+    "種類": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type"
+          }
+        }
+      }
+    },
     "空欄ならデスクトップ全体に接続します。指定すると、そのプログラムのウィンドウだけを表示します（サーバー側で RemoteApp を許可しておく必要があります）。RemoteApp では H.264 を使いません。": {
       "localizations": {
         "en": {
@@ -3419,6 +4489,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tap the sliver left at the edge to bring the buttons back."
+          }
+        }
+      }
+    },
+    "端末": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terminal"
           }
         }
       }
@@ -3443,6 +4523,16 @@
         }
       }
     },
+    "続ける": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue"
+          }
+        }
+      }
+    },
     "編集": {
       "localizations": {
         "en": {
@@ -3463,6 +4553,16 @@
         }
       }
     },
+    "自動で再接続": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconnect Automatically"
+          }
+        }
+      }
+    },
     "自動は画面の大きさに合わせて解像度を変えます（サーバーが対応している場合）。「画面の端まで使う」をオフにすると、Dynamic Island や画面の角を避けて表示します。": {
       "localizations": {
         "en": {
@@ -3479,6 +4579,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Auto Reconnect"
+          }
+        }
+      }
+    },
+    "自動（モバイル回線では低画質）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatic (Low Quality on Cellular)"
           }
         }
       }
@@ -3519,6 +4629,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "This certificate is self-signed or from a private CA. The chain and validity period are checked, but no third party vouches for it. Confirm by some other means that the fingerprint below belongs to the server."
+          }
+        }
+      }
+    },
+    "英字": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ABC"
           }
         }
       }
@@ -3643,6 +4763,16 @@
         }
       }
     },
+    "複数行を貼り付けますか？": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste Multiple Lines?"
+          }
+        }
+      }
+    },
     "複製": {
       "localizations": {
         "en": {
@@ -3733,6 +4863,16 @@
         }
       }
     },
+    "詳細": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Advanced"
+          }
+        }
+      }
+    },
     "認証に失敗しました。ユーザー名・パスワード・ドメインを確認してください。Microsoft アカウントはメールアドレスをユーザー名にします。": {
       "localizations": {
         "en": {
@@ -3753,6 +4893,16 @@
         }
       }
     },
+    "読み込む": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import"
+          }
+        }
+      }
+    },
     "読み込めませんでした": {
       "localizations": {
         "en": {
@@ -3763,12 +4913,52 @@
         }
       }
     },
+    "貼り付け": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste"
+          }
+        }
+      }
+    },
+    "貼り付けた鍵": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pasted Key"
+          }
+        }
+      }
+    },
+    "貼り付けて読み込む": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import from Clipboard"
+          }
+        }
+      }
+    },
     "貼り付けで送る": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Send by Paste"
+          }
+        }
+      }
+    },
+    "貼り付ける": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste"
           }
         }
       }
@@ -3833,6 +5023,26 @@
         }
       }
     },
+    "転送を追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Forward"
+          }
+        }
+      }
+    },
+    "転送先ホスト": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Destination Host"
+          }
+        }
+      }
+    },
     "追加": {
       "localizations": {
         "en": {
@@ -3879,6 +5089,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sent"
+          }
+        }
+      }
+    },
+    "送信が詰まっています。接続を確認してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sending is stalled. Check the connection."
           }
         }
       }
@@ -3933,6 +5153,16 @@
         }
       }
     },
+    "配色": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Theme"
+          }
+        }
+      }
+    },
     "重複 down": {
       "localizations": {
         "en": {
@@ -3943,12 +5173,102 @@
         }
       }
     },
+    "鍵": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key"
+          }
+        }
+      }
+    },
+    "鍵、サーバーの質問（ワンタイムパスワードなど）、パスワードの順に試します。ユーザー名が空なら接続するときに聞きます。パスワードと鍵は Keychain にのみ保存されます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tries the key, then server prompts (such as one-time passwords), then the password. If the user name is empty, you're asked when connecting. Passwords and keys are stored only in the Keychain."
+          }
+        }
+      }
+    },
+    "鍵のパスフレーズ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key Passphrase"
+          }
+        }
+      }
+    },
+    "鍵はまだありません。作成するか、読み込んでください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No keys yet. Create or import one."
+          }
+        }
+      }
+    },
+    "鍵を作成し、公開鍵をコピーしました。サーバーの ~/.ssh/authorized_keys に追加してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Created a key and copied its public key. Add it to ~/.ssh/authorized_keys on the server."
+          }
+        }
+      }
+    },
+    "鍵を保存できませんでした（%@）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't save the key (%@)."
+          }
+        }
+      }
+    },
+    "鍵を削除しますか？": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete Key?"
+          }
+        }
+      }
+    },
+    "鍵を管理…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manage Keys…"
+          }
+        }
+      }
+    },
     "閉じる": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Close"
+          }
+        }
+      }
+    },
+    "開く": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open"
           }
         }
       }
@@ -4049,6 +5369,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Quality"
+          }
+        }
+      }
+    },
+    "高画質（60fps）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "High Quality (60 fps)"
           }
         }
       }
