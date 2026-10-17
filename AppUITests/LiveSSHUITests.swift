@@ -74,17 +74,39 @@ final class LiveSSHUITests: XCTestCase {
         XCTAssertTrue(waitForTerminal(containing: "typed-42"), "typing reaches the shell\n\(terminalText())")
         shot("3-terminal")
 
+        // The key bar. With DECCKM on, as full-screen programs set it, PgUp
+        // goes to the remote program; the tty echoes what arrives.
+        app.typeText("printf '\\033[?1h'; cat -v\n")
+        element("terminal-key-PgUp").tap()
+        XCTAssertTrue(waitForTerminal(containing: "^[[5~"), "PgUp is sent\n\(terminalText())")
+        element("terminal-key-Ctrl").tap()
+        element("terminal-key-PgDn").tap()
+        XCTAssertTrue(waitForTerminal(containing: "^[[6;5~"), "Ctrl+PgDn is sent\n\(terminalText())")
+        // F5 is past the screen's edge until the bar is scrolled.
+        let f5 = element("terminal-key-F5")
+        for _ in 0..<4 where !f5.isHittable {
+            element("terminal-key-Del").swipeLeft()
+        }
+        f5.tap()
+        XCTAssertTrue(waitForTerminal(containing: "^[[15~"), "F5 is sent\n\(terminalText())")
+        shot("4-key-bar")
+        // Sticky Ctrl applies to the next typed key: ^C ends cat.
+        element("terminal-key-Ctrl").tap()
+        app.typeText("c")
+        app.typeText("printf '\\033[?1l'; echo after-ctrl-c-$((1+1))\n")
+        XCTAssertTrue(waitForTerminal(containing: "after-ctrl-c-2"), "Ctrl+C reaches the shell\n\(terminalText())")
+
         // The menu: an SSH session shows its own items.
         let menuButton = element("session-menu-button")
         if menuButton.waitForExistence(timeout: 3) {
             menuButton.tap()
             XCTAssertTrue(element("session-terminal-paste").waitForExistence(timeout: 5))
-            shot("4-menu")
+            shot("5-menu")
             element("session-menu-close").tap()
         }
 
         app.typeText("exit\n")
         XCTAssertTrue(element("session-end-reason").waitForExistence(timeout: 15), "the shell's exit is shown")
-        shot("5-exited")
+        shot("6-exited")
     }
 }

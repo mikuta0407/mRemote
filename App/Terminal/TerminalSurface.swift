@@ -76,6 +76,9 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
         super.init(frame: .zero, font: Self.font(size: CGFloat(settings.fontSize)), options: options)
         terminalDelegate = self
         optionAsMetaKey = settings.optionAsMeta
+        #if !targetEnvironment(macCatalyst)
+        inputAccessoryView = TerminalKeyBar(terminal: self)
+        #endif
         applyTheme()
         session.terminalOutput.setReadableHandler { [weak self] in
             DispatchQueue.main.async { self?.drain() }
@@ -187,6 +190,31 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
         let bytes = TerminalKeyEncoder.bytes(
             for: key, modifiers: modifiers, applicationCursor: getTerminal().applicationCursor)
         sendToSession(bytes[...])
+    }
+
+    /// A key from the key bar: with the sticky Ctrl/Alt, which it clears,
+    /// unless `modifiers` says otherwise. PgUp/PgDn without a modifier act
+    /// as the hardware keys do in SwiftTerm: the local scrollback on the
+    /// normal screen, the remote program when it runs full-screen.
+    func pressKey(_ key: TerminalKey, modifiers: TerminalModifiers? = nil) {
+        let modifiers = modifiers ?? takeStickyModifiers()
+        if modifiers.isEmpty, !getTerminal().applicationCursor {
+            switch key {
+            case .pageUp: pageUp(); return
+            case .pageDown: pageDown(); return
+            default: break
+            }
+        }
+        sendKey(key, modifiers: modifiers)
+    }
+
+    func takeStickyModifiers() -> TerminalModifiers {
+        var modifiers: TerminalModifiers = []
+        if controlModifier { modifiers.insert(.control) }
+        if metaModifier { modifiers.insert(.meta) }
+        controlModifier = false
+        metaModifier = false
+        return modifiers
     }
 
     private func sendToSession(_ data: ArraySlice<UInt8>) {
