@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 static int g_failures;
@@ -211,8 +212,18 @@ static void harness_start(harness *h, plan_kind plan, const char *key, uint16_t 
     harness_start_with(h, plan, key, port, NULL, 0);
 }
 
+static void harness_start_to(harness *h, plan_kind plan, const char *key, const char *host,
+                             uint16_t port, uint32_t connect_timeout_ms,
+                             const mr_ssh_forward *forwards, size_t forward_count);
+
 static void harness_start_with(harness *h, plan_kind plan, const char *key, uint16_t port,
                                const mr_ssh_forward *forwards, size_t forward_count) {
+    harness_start_to(h, plan, key, "127.0.0.1", port, 5000, forwards, forward_count);
+}
+
+static void harness_start_to(harness *h, plan_kind plan, const char *key, const char *host,
+                             uint16_t port, uint32_t connect_timeout_ms,
+                             const mr_ssh_forward *forwards, size_t forward_count) {
     memset(h, 0, sizeof *h);
     pthread_mutex_init(&h->lock, NULL);
     pthread_cond_init(&h->cond, NULL);
@@ -220,14 +231,14 @@ static void harness_start_with(harness *h, plan_kind plan, const char *key, uint
     h->key_name = key;
     mr_ssh_config config = {
         .struct_size = sizeof config,
-        .host = "127.0.0.1",
+        .host = host,
         .port = port,
         .username = g_user,
         .term = "xterm-256color",
         .columns = 80,
         .rows = 24,
         .keepalive_seconds = 5,
-        .connect_timeout_ms = 5000,
+        .connect_timeout_ms = connect_timeout_ms,
         .forwards = forwards,
         .forward_count = forward_count,
     };
@@ -240,6 +251,12 @@ static void harness_start_with(harness *h, plan_kind plan, const char *key, uint
     };
     mr_ssh_status status = mr_ssh_session_create(&config, &callbacks, h, &h->session);
     CHECK(status == MR_SSH_STATUS_OK, "create=%d", status);
+}
+
+static double monotonic_seconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
 /* CPU time this process has used, in seconds. */
@@ -279,10 +296,15 @@ static int wait_for(harness *h, const char *needle, int seconds) {
     return found;
 }
 
+/* The bridge's test hook (MR_SSH_TEST_HOOKS): libssh2's blocks not yet
+ * freed. Sessions run one at a time here, so 0 between them. */
+long mr_ssh_test_libssh2_blocks(void);
+
 static void harness_finish(harness *h, pthread_t thread) {
     pthread_join(thread, NULL);
     mr_ssh_status status = mr_ssh_session_destroy(h->session);
     CHECK(status == MR_SSH_STATUS_OK, "destroy=%d", status);
+    CHECK(mr_ssh_test_libssh2_blocks() == 0, "libssh2 leaked %ld block(s)", mr_ssh_test_libssh2_blocks());
     free(h->output);
 }
 
@@ -810,6 +832,190 @@ static void test_a_forward_works_while_output_is_paused(void) {
     stop_echo_server(&server, echo);
 }
 
+/* The bridge's test hook (MR_SSH_TEST_HOOKS) makes this name's lookup hang
+ * for two seconds, then fail. */
+#define SLOW_LOOKUP_HOST "slow-lookup.mremote.test"
+
+/* A lookup that hangs does not hold up a stop, or destroy. */
+static void test_a_hanging_lookup_does_not_delay_a_stop(void) {
+    printf("stop during a hanging name lookup\n");
+    harness h;
+    harness_start_to(&h, PLAN_KEY, "user_ed25519", SLOW_LOOKUP_HOST, g_port, 30000, NULL, 0);
+    pthread_t thread;
+    pthread_create(&thread, NULL, run_thread, &h);
+    usleep(200 * 1000);
+    double start = monotonic_seconds();
+    mr_ssh_session_request_stop(h.session);
+    pthread_join(thread, NULL);
+    double elapsed = monotonic_seconds() - start;
+    CHECK(elapsed < 1.0, "run returned %.2f s after the stop", elapsed);
+    CHECK(h.last_state == MR_SSH_STATE_CLOSED, "state %u", h.last_state);
+    CHECK(h.failure == MR_SSH_FAILURE_CANCELLED, "failure %u", h.failure);
+    CHECK(mr_ssh_session_destroy(h.session) == MR_SSH_STATUS_OK, "destroy");
+
+    /* destroy alone, with run still in the lookup. */
+    harness_start_to(&h, PLAN_KEY, "user_ed25519", SLOW_LOOKUP_HOST, g_port, 30000, NULL, 0);
+    pthread_create(&thread, NULL, run_thread, &h);
+    usleep(200 * 1000);
+    start = monotonic_seconds();
+    CHECK(mr_ssh_session_destroy(h.session) == MR_SSH_STATUS_OK, "destroy during the lookup");
+    elapsed = monotonic_seconds() - start;
+    CHECK(elapsed < 1.0, "destroy took %.2f s", elapsed);
+    pthread_join(thread, NULL);
+    /* The lookup threads finish after their sessions are gone, and clean up
+     * after themselves (ASan, TSan). */
+}
+
+static void test_a_hanging_lookup_times_out(void) {
+    printf("hanging name lookup past the connect timeout\n");
+    harness h;
+    double start = monotonic_seconds();
+    harness_start_to(&h, PLAN_KEY, "user_ed25519", SLOW_LOOKUP_HOST, g_port, 500, NULL, 0);
+    pthread_t thread;
+    pthread_create(&thread, NULL, run_thread, &h);
+    pthread_join(thread, NULL);
+    double elapsed = monotonic_seconds() - start;
+    CHECK(elapsed >= 0.4 && elapsed < 1.5, "ended after %.2f s", elapsed);
+    CHECK(h.last_state == MR_SSH_STATE_FAILED, "state %u", h.last_state);
+    CHECK(h.failure == MR_SSH_FAILURE_TIMEOUT, "failure %u", h.failure);
+    CHECK(mr_ssh_session_destroy(h.session) == MR_SSH_STATUS_OK, "destroy");
+}
+
+/* A TCP relay to the sshd that can stop reading from the client, as a
+ * server or network that has stopped taking data would: the bridge's socket
+ * fills up. */
+typedef struct {
+    int listener;
+    uint16_t port;
+    int client, server;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    int stall_up;  /* client -> server is not read */
+    int closing;
+    pthread_t thread, down;
+} relay;
+
+static void *relay_down(void *argument) {
+    relay *r = argument;
+    char buffer[16384];
+    ssize_t n;
+    while ((n = read(r->server, buffer, sizeof buffer)) > 0) {
+        if (write(r->client, buffer, (size_t)n) != n) break;
+    }
+    shutdown(r->client, SHUT_WR);
+    return NULL;
+}
+
+static void *relay_thread(void *argument) {
+    relay *r = argument;
+    int client = accept(r->listener, NULL, NULL);
+    int server = client >= 0 ? connect_loopback(g_port) : -1;
+    pthread_mutex_lock(&r->lock);
+    r->client = client;
+    r->server = server;
+    pthread_mutex_unlock(&r->lock);
+    if (server < 0) return NULL;
+    struct timeval none = { 0 };
+    setsockopt(server, SOL_SOCKET, SO_RCVTIMEO, &none, sizeof none);
+    pthread_create(&r->down, NULL, relay_down, r);
+    char buffer[4096];
+    for (;;) {
+        pthread_mutex_lock(&r->lock);
+        while (r->stall_up && !r->closing) pthread_cond_wait(&r->cond, &r->lock);
+        int closing = r->closing;
+        pthread_mutex_unlock(&r->lock);
+        if (closing) break;
+        ssize_t n = read(r->client, buffer, sizeof buffer);
+        if (n <= 0 || write(r->server, buffer, (size_t)n) != n) break;
+    }
+    shutdown(r->server, SHUT_WR);
+    pthread_join(r->down, NULL);
+    return NULL;
+}
+
+static void relay_start(relay *r) {
+    memset(r, 0, sizeof *r);
+    pthread_mutex_init(&r->lock, NULL);
+    pthread_cond_init(&r->cond, NULL);
+    r->client = r->server = -1;
+    r->listener = socket(AF_INET, SOCK_STREAM, 0);
+    /* Inherited by the accepted socket: little room on the way. */
+    int small = 4096;
+    setsockopt(r->listener, SOL_SOCKET, SO_RCVBUF, &small, sizeof small);
+    struct sockaddr_in address = { .sin_len = sizeof address, .sin_family = AF_INET,
+                                   .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    bind(r->listener, (struct sockaddr *)&address, sizeof address);
+    listen(r->listener, 1);
+    r->port = bound_port(r->listener);
+    pthread_create(&r->thread, NULL, relay_thread, r);
+}
+
+static void relay_stop(relay *r) {
+    pthread_mutex_lock(&r->lock);
+    r->closing = 1;
+    pthread_cond_broadcast(&r->cond);
+    int client = r->client, server = r->server;
+    pthread_mutex_unlock(&r->lock);
+    if (client >= 0) shutdown(client, SHUT_RDWR);
+    if (server >= 0) shutdown(server, SHUT_RDWR);
+    shutdown(r->listener, SHUT_RDWR);
+    pthread_join(r->thread, NULL);
+    if (r->client >= 0) close(r->client);
+    if (r->server >= 0) close(r->server);
+    close(r->listener);
+    pthread_mutex_destroy(&r->lock);
+    pthread_cond_destroy(&r->cond);
+}
+
+/* A stop in the middle of a big paste that the far end is not taking - its
+ * socket full, a packet half out - still ends the run promptly and frees
+ * everything (ASan's leak check). */
+static void test_a_stop_during_a_stalled_paste_is_prompt(void) {
+    printf("stop during a stalled paste\n");
+    relay r;
+    relay_start(&r);
+    harness h;
+    harness_start(&h, PLAN_KEY, "user_ed25519", r.port);
+    pthread_t thread;
+    pthread_create(&thread, NULL, run_thread, &h);
+    write_text(&h, "stty -echo; echo sleeping-$((2*4)); sleep 30\n");
+    CHECK(wait_for(&h, "sleeping-8", 15), "not ready; state=%u failure=%u", h.last_state, h.failure);
+
+    pthread_mutex_lock(&r.lock);
+    r.stall_up = 1;
+    pthread_mutex_unlock(&r.lock);
+    /* Up to 8 MB, as fast as the input queue takes it, for a second. */
+    static uint8_t chunk[65536];
+    memset(chunk, 'x', sizeof chunk);
+    size_t queued = 0;
+    int full = 0;
+    double until = monotonic_seconds() + 1.0;
+    while (queued < 8u * 1024u * 1024u && monotonic_seconds() < until) {
+        mr_ssh_status status = mr_ssh_session_write(h.session, chunk, sizeof chunk);
+        if (status == MR_SSH_STATUS_OK) {
+            queued += sizeof chunk;
+        } else {
+            CHECK(status == MR_SSH_ERROR_QUEUE_FULL, "write=%d", status);
+            full = 1;
+            usleep(10 * 1000);
+        }
+    }
+    CHECK(full, "%zu bytes queued and the queue never filled: not stalled", queued);
+
+    double start = monotonic_seconds();
+    mr_ssh_session_request_stop(h.session);
+    pthread_join(thread, NULL);
+    double elapsed = monotonic_seconds() - start;
+    CHECK(elapsed < 2.0, "run returned %.2f s after the stop", elapsed);
+    CHECK(h.last_state == MR_SSH_STATE_CLOSED, "state %u", h.last_state);
+    CHECK(h.failure == MR_SSH_FAILURE_CANCELLED, "failure %u", h.failure);
+    CHECK(mr_ssh_session_destroy(h.session) == MR_SSH_STATUS_OK, "destroy");
+    /* libssh2_session_free said EAGAIN here, before the send queue. */
+    CHECK(mr_ssh_test_libssh2_blocks() == 0, "libssh2 leaked %ld block(s)", mr_ssh_test_libssh2_blocks());
+    free(h.output);
+    relay_stop(&r);
+}
+
 static void test_invalid_arguments_are_refused(void) {
     printf("argument checks\n");
     mr_ssh_session *session = NULL;
@@ -869,12 +1075,15 @@ int main(void) {
     test_a_rejected_host_key_fails_before_sign_in();
     test_a_stop_during_a_challenge_ends_the_run();
     test_a_refused_port_is_reported();
+    test_a_hanging_lookup_does_not_delay_a_stop();
+    test_a_hanging_lookup_times_out();
     test_a_resize_reaches_the_pty();
     test_refused_output_is_held_not_lost();
     test_a_local_forward_carries_data_both_ways();
     test_concurrent_opens_reach_their_own_destinations();
     test_connections_past_the_limit_wait_their_turn();
     test_a_forward_works_while_output_is_paused();
+    test_a_stop_during_a_stalled_paste_is_prompt();
 
     if (g_failures) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);

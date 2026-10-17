@@ -46,6 +46,15 @@ static const char kSignPreference[] =
 #define WRITE_CHUNK (32u * 1024u)
 #define MAX_AUTH_ATTEMPTS 8u
 #define CLOSE_TIMEOUT_MS 1000
+/* While closing, how long the socket may take nothing before what is still
+ * queued for it is dropped: a server that stopped reading is not waited for. */
+#define CLOSE_STALL_MS 250
+/* The send queue (see send_callback). Past SEND_QUEUE_HIGH the bulk senders
+ * - the shell's input, the forwards - wait for it to drain; the small packets
+ * libssh2 sends by itself (window adjustments, replies, keepalives) still go
+ * in, up to SEND_QUEUE_LIMIT, past which the connection fails. */
+#define SEND_QUEUE_HIGH (64u * 1024u)
+#define SEND_QUEUE_LIMIT (1024u * 1024u)
 
 typedef enum {
     CHALLENGE_NONE = 0,
@@ -113,6 +122,12 @@ struct mr_ssh_session {
     /* The keyboard-interactive call's deadline, restarted after each round
      * the user answers: their think time does not count against it. */
     int64_t kbd_deadline;
+    /* What libssh2 has sent that the socket has not taken yet. */
+    uint8_t *send_queue;
+    size_t send_offset, send_length, send_capacity;
+    /* A send to the socket failed (errno), or the connection is being torn
+     * down (EPIPE): every later libssh2 send fails at once. */
+    int send_error;
 };
 
 static pthread_once_t g_libssh2_once = PTHREAD_ONCE_INIT;
@@ -140,11 +155,23 @@ static void wipe_free(void *bytes, size_t length) {
  * Each block keeps its size in a header that preserves malloc's alignment. */
 #define ALLOC_HEADER 16u
 
+#ifdef MR_SSH_TEST_HOOKS
+/* Tests only: libssh2's blocks not yet freed, across all sessions - 0 once
+ * every session is destroyed, or libssh2 leaked. */
+static long g_test_blocks;
+long mr_ssh_test_libssh2_blocks(void);
+long mr_ssh_test_libssh2_blocks(void) { return __atomic_load_n(&g_test_blocks, __ATOMIC_SEQ_CST); }
+#define TEST_COUNT_BLOCK(delta) __atomic_add_fetch(&g_test_blocks, (delta), __ATOMIC_SEQ_CST)
+#else
+#define TEST_COUNT_BLOCK(delta) ((void)0)
+#endif
+
 static LIBSSH2_ALLOC_FUNC(wiping_alloc) {
     (void)abstract;
     if (count > SIZE_MAX - ALLOC_HEADER) return NULL;
     uint8_t *block = malloc(ALLOC_HEADER + count);
     if (!block) return NULL;
+    TEST_COUNT_BLOCK(1);
     memcpy(block, &count, sizeof count);
     return block + ALLOC_HEADER;
 }
@@ -152,6 +179,7 @@ static LIBSSH2_ALLOC_FUNC(wiping_alloc) {
 static LIBSSH2_FREE_FUNC(wiping_free) {
     (void)abstract;
     if (!ptr) return;
+    TEST_COUNT_BLOCK(-1);
     uint8_t *block = (uint8_t *)ptr - ALLOC_HEADER;
     size_t count;
     memcpy(&count, block, sizeof count);
@@ -630,9 +658,87 @@ mr_ssh_status mr_ssh_session_destroy(mr_ssh_session *s) {
 
 /* ---- the run thread: I/O ------------------------------------------------- */
 
+/* Sends what is queued, as far as the socket takes it. */
+static void flush_send_queue(mr_ssh_session *s) {
+    while (s->send_offset < s->send_length && !s->send_error) {
+        ssize_t n = send(s->socket_fd, s->send_queue + s->send_offset,
+                         s->send_length - s->send_offset, 0);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno != EAGAIN && errno != EWOULDBLOCK) s->send_error = errno;
+            return;
+        }
+        s->send_offset += (size_t)n;
+    }
+    if (s->send_offset == s->send_length) s->send_offset = s->send_length = 0;
+}
+
+/* Whether the bulk senders should wait for the queue to drain. */
+static int send_congested(mr_ssh_session *s) {
+    return s->send_length - s->send_offset >= SEND_QUEUE_HIGH;
+}
+
+static int congested_callback(void *context) { return send_congested(context); }
+
+/* libssh2's send. It always takes the whole packet: what the socket does not
+ * take at once is queued here, and wait_io sends it on.
+ *
+ * libssh2 cannot drop a packet it has partly sent: until the same call is
+ * repeated, it refuses every other packet with EAGAIN, before it even tries
+ * the socket - including the CHANNEL_EOF and CHANNEL_CLOSE that
+ * libssh2_channel_free and libssh2_session_free send. A stop with a packet
+ * half out (a paste into a full socket) would then leave those frees saying
+ * EAGAIN for ever, leaking the session. With this, libssh2 never has a packet
+ * in flight; and once send_error is set every send fails at once, which the
+ * frees take as "closing anyway". */
+static LIBSSH2_SEND_FUNC(send_callback) {
+    mr_ssh_session *s = *abstract;
+    flush_send_queue(s);
+    if (s->send_error) return -s->send_error;
+    size_t sent = 0;
+    if (s->send_length == 0) {
+        ssize_t n = send(socket, buffer, length, flags);
+        if (n < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                s->send_error = errno;
+                return -s->send_error;
+            }
+            n = 0;
+        }
+        sent = (size_t)n;
+    }
+    size_t rest = length - sent;
+    if (rest == 0) return (ssize_t)length;
+    if (s->send_length + rest > SEND_QUEUE_LIMIT) {
+        s->send_error = ENOBUFS;
+        return -s->send_error;
+    }
+    if (s->send_length + rest > s->send_capacity) {
+        /* Ciphertext only: no need to wipe what realloc leaves behind. */
+        size_t capacity = s->send_capacity ? s->send_capacity : 16384;
+        while (capacity < s->send_length + rest) capacity *= 2;
+        uint8_t *grown = realloc(s->send_queue, capacity);
+        if (!grown) {
+            s->send_error = ENOMEM;
+            return -s->send_error;
+        }
+        s->send_queue = grown;
+        s->send_capacity = capacity;
+    }
+    if (s->send_offset) {
+        memmove(s->send_queue, s->send_queue + s->send_offset, s->send_length - s->send_offset);
+        s->send_length -= s->send_offset;
+        s->send_offset = 0;
+    }
+    memcpy(s->send_queue + s->send_length, (const uint8_t *)buffer + sent, rest);
+    s->send_length += rest;
+    return (ssize_t)length;
+}
+
 /* Waits until the socket is ready in the directions libssh2 is blocked on
  * (plus extra_events), or the wake pipe fires, or timeout_ms passes (-1
- * waits for ever). Returns -1 when a stop is requested. */
+ * waits for ever). Sends the send queue on meanwhile. Returns -1 when a stop
+ * is requested. */
 static int wait_io(mr_ssh_session *s, short extra_events, int timeout_ms, mr_forwarder *forwarder);
 
 static int wait_socket(mr_ssh_session *s, short extra_events, int timeout_ms) {
@@ -643,10 +749,12 @@ static int wait_socket(mr_ssh_session *s, short extra_events, int timeout_ms) {
 static int wait_io(mr_ssh_session *s, short extra_events, int timeout_ms, mr_forwarder *forwarder) {
     struct pollfd fds[2 + MR_SSH_MAX_FORWARDS + MR_SSH_MAX_TUNNELS];
     short events = extra_events;
-    if (s->ssh) {
-        int directions = libssh2_session_block_directions(s->ssh);
-        if (directions & LIBSSH2_SESSION_BLOCK_INBOUND) events |= POLLIN;
-        if (directions & LIBSSH2_SESSION_BLOCK_OUTBOUND) events |= POLLOUT;
+    flush_send_queue(s);
+    /* libssh2 itself never waits for the socket to drain (send_callback):
+     * the queue does. */
+    if (s->send_length && !s->send_error) events |= POLLOUT;
+    if (s->ssh && (libssh2_session_block_directions(s->ssh) & LIBSSH2_SESSION_BLOCK_INBOUND)) {
+        events |= POLLIN;
     }
     fds[0].fd = s->socket_fd;
     fds[0].events = events;
@@ -657,6 +765,7 @@ static int wait_io(mr_ssh_session *s, short extra_events, int timeout_ms, mr_for
     nfds_t count = 2 + (nfds_t)mr_forwarder_fill_pollfds(forwarder, fds + 2);
     int rc = poll(fds, count, timeout_ms);
     if (rc > 0 && (fds[1].revents & POLLIN)) drain_wake_pipe(s);
+    if (rc > 0 && (fds[0].revents & POLLOUT)) flush_send_queue(s);
     if (stop_requested(s)) return -1;
     return rc;
 }
@@ -692,33 +801,156 @@ static mr_ssh_failure failure_for_errno(int err) {
     }
 }
 
-/* Connects to the first address that answers. Returns 0, or -1 with
- * failure and detail set. */
-static int connect_socket(mr_ssh_session *s, mr_ssh_failure *failure, int32_t *detail) {
+/* ---- the run thread: name lookup ------------------------------------------ */
+
+/* getaddrinfo cannot be interrupted, and may block for as long as the system
+ * resolver likes. So it runs on a detached thread of its own, and the run
+ * thread waits for it, for a stop, or for the connect deadline, whichever is
+ * first. The lookup is shared by the two threads and freed by whichever lets
+ * go of it last: a run thread that gives up just lets go, and the lookup
+ * thread frees it once getaddrinfo returns. It never touches the session. */
+typedef struct {
+    pthread_mutex_t lock;
+    int references;  /* under lock */
+    int done;        /* under lock */
+    int status;      /* getaddrinfo's, once done */
+    struct addrinfo *results;
+    /* The lookup thread writes a byte once done, to wake the run thread's
+     * poll. Its own pipe, not the session's, which may be gone by then. */
+    int pipe[2];
+    char *host;
     char port[8];
-    snprintf(port, sizeof port, "%u", (unsigned)s->port);
+} lookup;
+
+#ifdef MR_SSH_TEST_HOOKS
+/* Tests only (CMakeLists.txt): a name whose lookup hangs for a while, then
+ * fails. */
+#define TEST_SLOW_LOOKUP_HOST "slow-lookup.mremote.test"
+#define TEST_SLOW_LOOKUP_MS 2000
+#endif
+
+static void lookup_release(lookup *l) {
+    pthread_mutex_lock(&l->lock);
+    int last = --l->references == 0;
+    pthread_mutex_unlock(&l->lock);
+    if (!last) return;
+    if (l->results) freeaddrinfo(l->results);
+    close(l->pipe[0]);
+    close(l->pipe[1]);
+    free(l->host);
+    pthread_mutex_destroy(&l->lock);
+    free(l);
+}
+
+static void *lookup_thread(void *argument) {
+    lookup *l = argument;
     struct addrinfo hints;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
     struct addrinfo *results = NULL;
-    /* Blocks, and a stop cannot interrupt it: it is noticed once the
-     * resolver returns, which its own timeouts bound. Until then destroy
-     * waits too. */
-    int gai = getaddrinfo(s->host, port, &hints, &results);
-    if (stop_requested(s)) {
-        if (results) freeaddrinfo(results);
-        *failure = MR_SSH_FAILURE_CANCELLED;
-        return -1;
+    int status;
+#ifdef MR_SSH_TEST_HOOKS
+    if (strcmp(l->host, TEST_SLOW_LOOKUP_HOST) == 0) {
+        usleep(TEST_SLOW_LOOKUP_MS * 1000);
+        status = EAI_NONAME;
+    } else
+#endif
+    status = getaddrinfo(l->host, l->port, &hints, &results);
+    pthread_mutex_lock(&l->lock);
+    l->status = status;
+    l->results = results;
+    l->done = 1;
+    pthread_mutex_unlock(&l->lock);
+    const char byte = 1;
+    ssize_t ignored = write(l->pipe[1], &byte, 1);
+    (void)ignored;
+    lookup_release(l);
+    return NULL;
+}
+
+/* Resolves the host. Returns its addresses (freeaddrinfo them), or NULL with
+ * failure and detail set: cancelled on a stop, timed out at deadline. */
+static struct addrinfo *resolve(mr_ssh_session *s, int64_t deadline, mr_ssh_failure *failure,
+                                int32_t *detail) {
+    lookup *l = calloc(1, sizeof *l);
+    if (!l) {
+        *failure = MR_SSH_FAILURE_INTERNAL;
+        return NULL;
     }
-    if (gai != 0 || !results) {
-        *failure = MR_SSH_FAILURE_NAME_RESOLUTION;
-        *detail = gai;
-        return -1;
+    l->pipe[0] = l->pipe[1] = -1;
+    l->host = copy_string(s->host, MR_SSH_MAX_HOST_BYTES);
+    snprintf(l->port, sizeof l->port, "%u", (unsigned)s->port);
+    if (!l->host || pipe(l->pipe) != 0) {
+        *detail = errno;
+        if (l->pipe[0] >= 0) close(l->pipe[0]);
+        if (l->pipe[1] >= 0) close(l->pipe[1]);
+        free(l->host);
+        free(l);
+        *failure = MR_SSH_FAILURE_INTERNAL;
+        return NULL;
+    }
+    pthread_mutex_init(&l->lock, NULL);
+    l->references = 2;
+
+    pthread_attr_t attributes;
+    pthread_t thread;
+    pthread_attr_init(&attributes);
+    pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
+    int error = pthread_create(&thread, &attributes, lookup_thread, l);
+    pthread_attr_destroy(&attributes);
+    if (error != 0) {
+        l->references = 1;
+        lookup_release(l);
+        *failure = MR_SSH_FAILURE_INTERNAL;
+        *detail = error;
+        return NULL;
     }
 
+    struct addrinfo *results = NULL;
+    for (;;) {
+        if (stop_requested(s)) {
+            *failure = MR_SSH_FAILURE_CANCELLED;
+            break;
+        }
+        pthread_mutex_lock(&l->lock);
+        int done = l->done;
+        if (done) {
+            results = l->results;
+            l->results = NULL;
+            if (l->status != 0 || !results) {
+                if (results) freeaddrinfo(results);
+                results = NULL;
+                *failure = MR_SSH_FAILURE_NAME_RESOLUTION;
+                *detail = l->status;
+            }
+        }
+        pthread_mutex_unlock(&l->lock);
+        if (done) break;
+        int64_t left = deadline - now_ms();
+        if (left <= 0) {
+            *failure = MR_SSH_FAILURE_TIMEOUT;
+            *detail = ETIMEDOUT;
+            break;
+        }
+        struct pollfd fds[2] = {
+            { .fd = l->pipe[0], .events = POLLIN, .revents = 0 },
+            { .fd = s->wake_pipe[0], .events = POLLIN, .revents = 0 },
+        };
+        if (poll(fds, 2, (int)left) > 0 && (fds[1].revents & POLLIN)) drain_wake_pipe(s);
+    }
+    lookup_release(l);
+    return results;
+}
+
+/* Connects to the first address that answers. The lookup and the connect
+ * share connect_timeout_ms. Returns 0, or -1 with failure and detail set. */
+static int connect_socket(mr_ssh_session *s, mr_ssh_failure *failure, int32_t *detail) {
     int64_t deadline = now_ms() + s->connect_timeout_ms;
+    struct addrinfo *results = resolve(s, deadline, failure, detail);
+    if (!results) return -1;
+
     int last_error = ETIMEDOUT;
     for (struct addrinfo *ai = results; ai; ai = ai->ai_next) {
         int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
@@ -1075,7 +1307,8 @@ static void run_shell(mr_ssh_session *s) {
     if (s->keepalive_seconds) libssh2_keepalive_config(s->ssh, 1, s->keepalive_seconds);
     mr_forwarder *forwarder = NULL;
     if (s->forward_count) {
-        forwarder = mr_forwarder_create(s->ssh, s->forwards, s->forward_count, report_forward, s);
+        forwarder = mr_forwarder_create(s->ssh, s->forwards, s->forward_count, report_forward,
+                                        congested_callback, s);
         /* Out of memory: the shell goes on without them. */
         if (!forwarder) {
             for (size_t i = 0; i < s->forward_count; i++) report_forward(s, i, ENOMEM);
@@ -1098,20 +1331,16 @@ static void run_shell(mr_ssh_session *s) {
         pthread_mutex_unlock(&s->lock);
         if (paused && resume && deliver_held(s)) paused = 0;
 
-        /* A send that would block waits on the socket's POLLOUT only when it
-         * is the socket it waits for, as libssh2 says right after the EAGAIN:
-         * a write whose window is used up waits for inbound data, and polling
-         * POLLOUT on a writable socket would spin. Saying it later is not
-         * enough, since later calls overwrite those directions. */
+        /* A send never waits for the socket here - send_callback queues what
+         * it does not take, and wait_io polls POLLOUT while anything is
+         * queued - so an EAGAIN means waiting for inbound data: a reply, a
+         * window adjustment, a key exchange. */
         int fatal = 0;
         int resize_blocked = 0;
-        int want_pollout = 0;
         if (resize) {
             int rc = libssh2_channel_request_pty_size_ex(s->channel, columns, rows, pw, ph);
             resize_blocked = rc == LIBSSH2_ERROR_EAGAIN;
-            if (resize_blocked) {
-                if (libssh2_session_block_directions(s->ssh) & LIBSSH2_SESSION_BLOCK_OUTBOUND) want_pollout = 1;
-            } else {
+            if (!resize_blocked) {
                 pthread_mutex_lock(&s->lock);
                 /* Only if no newer size came in meanwhile. */
                 if (s->columns == columns && s->rows == rows && s->pixel_width == pw &&
@@ -1122,9 +1351,13 @@ static void run_shell(mr_ssh_session *s) {
             }
         }
 
-        /* Input. */
+        /* Input, while the send queue has room for it. */
         int want_write = 0;
         for (;;) {
+            if (send_congested(s)) {
+                want_write = 1;
+                break;
+            }
             uint8_t chunk[WRITE_CHUNK];
             pthread_mutex_lock(&s->lock);
             size_t length = s->input_length < WRITE_CHUNK ? s->input_length : WRITE_CHUNK;
@@ -1136,7 +1369,6 @@ static void run_shell(mr_ssh_session *s) {
             /* 0: the window is used up. */
             if (n == LIBSSH2_ERROR_EAGAIN || n == 0) {
                 want_write = 1;
-                if (libssh2_session_block_directions(s->ssh) & LIBSSH2_SESSION_BLOCK_OUTBOUND) want_pollout = 1;
                 break;
             }
             if (n < 0) {
@@ -1212,15 +1444,18 @@ static void run_shell(mr_ssh_session *s) {
             }
             timeout_ms = next > 0 ? next * 1000 : 1000;
         }
+        /* A closing tunnel's deadline. */
+        int forward_timeout = mr_forwarder_timeout_ms(forwarder);
+        if (forward_timeout >= 0 && (timeout_ms < 0 || forward_timeout < timeout_ms)) {
+            timeout_ms = forward_timeout;
+        }
         pthread_mutex_lock(&s->lock);
         int more = (s->resize_pending && !resize_blocked) || (s->input_length && !want_write) || (paused && s->resume_requested);
         pthread_mutex_unlock(&s->lock);
         if (more || forwarded > 0) continue;
 
         /* Always readable: paused or not, the loop reads whatever arrives. */
-        short extra = POLLIN;
-        if (want_pollout || mr_forwarder_wants_write(forwarder)) extra |= POLLOUT;
-        if (wait_io(s, extra, timeout_ms, forwarder) < 0) continue;  /* the loop reports the stop */
+        if (wait_io(s, POLLIN, timeout_ms, forwarder) < 0) continue;  /* the loop reports the stop */
     }
     mr_forwarder_destroy(forwarder);
     wipe_free(buffer, READ_CHUNK);
@@ -1228,36 +1463,48 @@ static void run_shell(mr_ssh_session *s) {
     s->held_output = NULL;
 }
 
+/* Always finishes promptly and frees everything, whatever state the
+ * connection is in. */
 static void close_connection(mr_ssh_session *s) {
     if (s->ssh) {
+        /* Best effort and bounded: a goodbye, and what is still queued, if
+         * the socket takes it soon. The server may be gone, or not reading
+         * (a stop in the middle of a paste). The disconnect only queues, so
+         * it never says EAGAIN; and a stop request must not cut this short,
+         * so wait directly. */
+        libssh2_session_disconnect_ex(s->ssh, SSH_DISCONNECT_BY_APPLICATION, "closed", "");
         int64_t deadline = now_ms() + CLOSE_TIMEOUT_MS;
-        int rc;
-        /* Best effort and bounded: the server may already be gone. A stop
-         * request must not make this spin, so wait directly. */
         for (;;) {
-            rc = libssh2_session_disconnect_ex(s->ssh, SSH_DISCONNECT_BY_APPLICATION, "closed", "");
-            if (rc != LIBSSH2_ERROR_EAGAIN) break;
+            flush_send_queue(s);
+            if (!s->send_length || s->send_error) break;
             int64_t left = deadline - now_ms();
             if (left <= 0) break;
             struct pollfd fd = { .fd = s->socket_fd, .events = POLLOUT, .revents = 0 };
-            poll(&fd, 1, (int)left);
+            if (poll(&fd, 1, left < CLOSE_STALL_MS ? (int)left : CLOSE_STALL_MS) == 0) break;
         }
-        /* With the socket shut, closing a channel still open - the shell
-         * after a stop, a forward - fails at once instead of waiting for the
-         * server, so the frees below finish: in non-blocking mode an EAGAIN
-         * from libssh2_session_free would leak the session. */
-        if (s->socket_fd >= 0) shutdown(s->socket_fd, SHUT_RDWR);
+        /* From here every send fails at once (send_callback), and with the
+         * socket shut every read does too: closing a channel still open -
+         * the shell after a stop, a forward, one whose close the server
+         * never answered - sends nothing and waits for nothing, so the frees
+         * below finish. In non-blocking mode an EAGAIN from
+         * libssh2_session_free would leak the session; that cannot happen
+         * now, but it is retried a few times rather than trusted. */
+        s->send_error = EPIPE;
+        shutdown(s->socket_fd, SHUT_RDWR);
         if (s->channel) {
-            libssh2_channel_free(s->channel);
+            for (int i = 0; i < 4 && libssh2_channel_free(s->channel) == LIBSSH2_ERROR_EAGAIN; i++) {}
             s->channel = NULL;
         }
-        libssh2_session_free(s->ssh);
+        for (int i = 0; i < 4 && libssh2_session_free(s->ssh) == LIBSSH2_ERROR_EAGAIN; i++) {}
         s->ssh = NULL;
     }
     if (s->socket_fd >= 0) {
         close(s->socket_fd);
         s->socket_fd = -1;
     }
+    free(s->send_queue);
+    s->send_queue = NULL;
+    s->send_offset = s->send_length = s->send_capacity = 0;
 }
 
 mr_ssh_status mr_ssh_session_run(mr_ssh_session *s) {
@@ -1288,6 +1535,7 @@ mr_ssh_status mr_ssh_session_run(mr_ssh_session *s) {
         goto failed;
     }
     libssh2_session_set_blocking(s->ssh, 0);
+    libssh2_session_callback_set2(s->ssh, LIBSSH2_CALLBACK_SEND, (libssh2_cb_generic *)send_callback);
 
     {
         int rc;

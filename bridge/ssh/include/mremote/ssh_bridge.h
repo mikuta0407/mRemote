@@ -133,7 +133,8 @@ typedef struct {
     uint16_t pixel_height;
     /* 0 turns keepalive off. */
     uint32_t keepalive_seconds;
-    /* 0 means MR_SSH_DEFAULT_CONNECT_TIMEOUT_MS. */
+    /* Bounds the name lookup and the TCP connect together, then the SSH
+     * handshake. 0 means MR_SSH_DEFAULT_CONNECT_TIMEOUT_MS. */
     uint32_t connect_timeout_ms;
     /* ABI 2. Copied during create; NULL/0 for none. */
     const mr_ssh_forward *forwards;
@@ -253,7 +254,7 @@ mr_ssh_status mr_ssh_session_resize(
     uint16_t pixel_width, uint16_t pixel_height);
 /* After on_output took fewer bytes than offered. */
 mr_ssh_status mr_ssh_session_resume_output(mr_ssh_session *session);
-/* Idempotent. Wakes a pending challenge and the I/O wait. */
+/* Idempotent. Wakes a pending challenge, a name lookup and the I/O wait. */
 mr_ssh_status mr_ssh_session_request_stop(mr_ssh_session *session);
 
 /* Stops the session, waits for run to return, and frees it. Not from the run

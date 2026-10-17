@@ -44,6 +44,9 @@ if(NOT MR_SSH_SANITIZER STREQUAL "none")
 endif()
 
 if(BUILD_TESTING)
+    # Test hooks in the bridge (a name lookup that hangs); never in the
+    # xcframework, which scripts/build-ssh-xcframework.sh builds.
+    target_compile_definitions(mremote_ssh_bridge PRIVATE MR_SSH_TEST_HOOKS=1)
     add_executable(ssh_bridge_tests tests/ssh_bridge_tests.c)
     target_link_libraries(ssh_bridge_tests PRIVATE mremote_ssh_bridge)
     target_compile_options(ssh_bridge_tests PRIVATE -Wall -Wextra -Werror)

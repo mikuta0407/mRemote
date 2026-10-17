@@ -9,10 +9,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 
 #define TUNNEL_BUFFER (32u * 1024u)
+/* A closing tunnel waits this long for the server's CLOSE. Then it is given
+ * up on: its slot is freed, and its channel - which libssh2 cannot free
+ * without that reply - is left to libssh2_session_free. */
+#define CLOSE_TIMEOUT_MS 10000
+/* Channels given up on, at most. Each may still hold up to its window of
+ * data inside libssh2, so past this closing tunnels keep their slots, and
+ * new connections wait. */
+#define MAX_ABANDONED 8u
 
 /* OPENING also covers waiting for a turn to open. CLOSING: the client is
  * gone, and the channel is being closed without blocking. */
@@ -34,6 +43,7 @@ typedef struct {
     size_t down_length, down_offset;
     int channel_eof;
     int close_started;
+    int64_t close_deadline;  /* once closing */
 } tunnel;
 
 typedef struct {
@@ -50,12 +60,21 @@ struct mr_forwarder {
     /* Closing tunnels too: their channels are still on the session. */
     tunnel *tunnels[MR_SSH_MAX_TUNNELS];
     size_t tunnel_count;
+    /* Closing tunnels given up on: their channels stay on the session. */
+    size_t abandoned;
     /* The tunnel whose channel open is in flight. libssh2 keeps that state
      * per session, not per call, so channels open one at a time: two opens
      * interleaved could hand one tunnel the channel meant for the other. */
     tunnel *opening;
-    int wants_write;
+    int (*congested)(void *context);
+    void *context;
 };
+
+static int64_t now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 static int set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -90,10 +109,13 @@ static int open_listener(uint16_t port, int *error) {
 
 mr_forwarder *mr_forwarder_create(
     LIBSSH2_SESSION *ssh, const mr_ssh_forward *forwards, size_t count,
-    void (*report)(void *context, size_t index, int32_t error), void *context) {
+    void (*report)(void *context, size_t index, int32_t error),
+    int (*congested)(void *context), void *context) {
     mr_forwarder *forwarder = calloc(1, sizeof *forwarder);
     if (!forwarder) return NULL;
     forwarder->ssh = ssh;
+    forwarder->congested = congested;
+    forwarder->context = context;
     if (count) {
         forwarder->listeners = calloc(count, sizeof *forwarder->listeners);
         if (!forwarder->listeners) {
@@ -151,12 +173,6 @@ size_t mr_forwarder_fill_pollfds(mr_forwarder *f, struct pollfd *fds) {
     return n;
 }
 
-/* After an EAGAIN: whether the send is waiting for the socket to drain,
- * rather than for the window or for a reply. */
-static void note_blocked(mr_forwarder *f) {
-    if (libssh2_session_block_directions(f->ssh) & LIBSSH2_SESSION_BLOCK_OUTBOUND) f->wants_write = 1;
-}
-
 /* Drops the client side. A tunnel with a channel stays in the list, closing,
  * until step_tunnel has closed and freed it; returns 1 when the tunnel was
  * removed instead. */
@@ -167,6 +183,7 @@ static int retire_tunnel(mr_forwarder *f, size_t index) {
         t->fd = -1;
     }
     if (t->channel) {
+        if (t->state != TUNNEL_CLOSING) t->close_deadline = now_ms() + CLOSE_TIMEOUT_MS;
         t->state = TUNNEL_CLOSING;
         return 0;
     }
@@ -206,22 +223,26 @@ static int accept_connections(mr_forwarder *f) {
 }
 
 /* Sends what the client sent, then its EOF. Returns 0 when nothing is left
- * to send, 1 while a send waits, or -1 when the channel failed.
+ * to send, 1 while a send waits (for the window, a reply or the session's
+ * send queue), or -1 when the channel failed.
  *
- * libssh2 can finish a partly sent packet only when the same call is
- * repeated - it knows the packet by its address, and the EOF packet lives on
- * libssh2_channel_send_eof's stack - and until then refuses every other send
- * on the session. So this is called from one place only, for closing
- * tunnels too, and a tunnel is not closed while it has a send pending. */
+ * KEEP THIS THE ONLY CALLER of libssh2_channel_write and
+ * libssh2_channel_send_eof for tunnels, and call it from one place only
+ * (step_tunnel, for closing tunnels too). A libssh2 send interrupted by
+ * EAGAIN must be finished by repeating the same call with the same bytes:
+ * libssh2_channel_write keeps the packet it began in the channel, sized by
+ * the first call, and libssh2 knows a partly sent packet by its address -
+ * the EOF packet's lives on libssh2_channel_send_eof's stack, so even the
+ * call path matters. The session's send queue (send_callback in
+ * ssh_bridge.c) now keeps libssh2 from holding partly sent packets, but a
+ * write begun before a key exchange still waits in the channel. */
 static int flush_up(mr_forwarder *f, tunnel *t, int *progress) {
     while (t->up_offset < t->up_length) {
+        if (f->congested && f->congested(f->context)) return 1;
         ssize_t n = libssh2_channel_write(t->channel, (const char *)t->up + t->up_offset,
                                           t->up_length - t->up_offset);
         /* 0: the window is used up. */
-        if (n == LIBSSH2_ERROR_EAGAIN || n == 0) {
-            note_blocked(f);
-            return 1;
-        }
+        if (n == LIBSSH2_ERROR_EAGAIN || n == 0) return 1;
         if (n < 0) return -1;
         t->up_offset += (size_t)n;
         *progress = 1;
@@ -229,10 +250,7 @@ static int flush_up(mr_forwarder *f, tunnel *t, int *progress) {
     t->up_length = t->up_offset = 0;
     if (t->client_eof && !t->eof_sent) {
         int rc = libssh2_channel_send_eof(t->channel);
-        if (rc == LIBSSH2_ERROR_EAGAIN) {
-            note_blocked(f);
-            return 1;
-        }
+        if (rc == LIBSSH2_ERROR_EAGAIN) return 1;
         if (rc != 0) return -1;
         t->eof_sent = 1;
         *progress = 1;
@@ -242,7 +260,7 @@ static int flush_up(mr_forwarder *f, tunnel *t, int *progress) {
 
 /* A closing tunnel: lets a pending send finish, then closes and frees the
  * channel. Returns -1 once it is freed, else 0. */
-static int finish_close(mr_forwarder *f, tunnel *t, int pending) {
+static int finish_close(tunnel *t, int pending) {
     /* With the window used up nothing can be half sent - libssh2 builds a
      * packet only within the window and shrinks the window once it is out -
      * so the client's last bytes are dropped rather than waited for. */
@@ -255,7 +273,6 @@ static int finish_close(mr_forwarder *f, tunnel *t, int pending) {
     t->close_started = 1;
     if (libssh2_channel_close(t->channel) == LIBSSH2_ERROR_EAGAIN ||
         libssh2_channel_free(t->channel) == LIBSSH2_ERROR_EAGAIN) {
-        note_blocked(f);
         return 0;
     }
     t->channel = NULL;
@@ -274,10 +291,7 @@ static int step_tunnel(mr_forwarder *f, tunnel *t) {
             f->ssh, l->remote_host, l->remote_port, "127.0.0.1", t->peer_port);
         if (!t->channel) {
             int error = libssh2_session_last_errno(f->ssh);
-            if (error == LIBSSH2_ERROR_EAGAIN) {
-                note_blocked(f);
-                return 0;
-            }
+            if (error == LIBSSH2_ERROR_EAGAIN) return 0;
             f->opening = NULL;
             /* A dead connection ends the session. Anything else - the server
              * refusing (AllowTcpForwarding no) or nothing listening at the
@@ -307,8 +321,9 @@ static int step_tunnel(mr_forwarder *f, tunnel *t) {
             return -1;
         }
     }
+    /* The one call of flush_up: see there. */
     int pending = t->close_started ? 0 : flush_up(f, t, &progress);
-    if (t->state == TUNNEL_CLOSING) return finish_close(f, t, pending);
+    if (t->state == TUNNEL_CLOSING) return finish_close(t, pending);
     if (pending < 0) return -1;
 
     /* Channel to client. Not read while the client is not taking what it
@@ -348,10 +363,31 @@ static int step_tunnel(mr_forwarder *f, tunnel *t) {
     return progress;
 }
 
+/* Gives up on a closing tunnel past its deadline, if there is room for one
+ * more abandoned channel: the tunnel is freed, the channel left as it is -
+ * no further libssh2 call on it, so nothing of it is half done - for
+ * libssh2_session_free. Returns 1 when the tunnel was removed. */
+static int abandon_if_overdue(mr_forwarder *f, size_t index, int64_t now) {
+    tunnel *t = f->tunnels[index];
+    if (t->state != TUNNEL_CLOSING || now < t->close_deadline || f->abandoned >= MAX_ABANDONED) return 0;
+    f->abandoned++;
+    free(t);
+    f->tunnels[index] = f->tunnels[--f->tunnel_count];
+    return 1;
+}
+
 int mr_forwarder_step(mr_forwarder *f) {
     if (!f) return 0;
-    f->wants_write = 0;
-    int progress = accept_connections(f);
+    int64_t now = now_ms();
+    int progress = 0;
+    for (size_t i = 0; i < f->tunnel_count;) {
+        if (abandon_if_overdue(f, i, now)) {
+            progress = 1;
+            continue;
+        }
+        i++;
+    }
+    progress |= accept_connections(f);
     for (size_t i = 0; i < f->tunnel_count;) {
         int rc = step_tunnel(f, f->tunnels[i]);
         if (rc < -1) return rc;
@@ -366,7 +402,19 @@ int mr_forwarder_step(mr_forwarder *f) {
     return progress;
 }
 
-int mr_forwarder_wants_write(const mr_forwarder *f) { return f ? f->wants_write : 0; }
+int mr_forwarder_timeout_ms(const mr_forwarder *f) {
+    if (!f || f->abandoned >= MAX_ABANDONED) return -1;
+    int64_t earliest = -1;
+    for (size_t i = 0; i < f->tunnel_count; i++) {
+        const tunnel *t = f->tunnels[i];
+        if (t->state == TUNNEL_CLOSING && (earliest < 0 || t->close_deadline < earliest)) {
+            earliest = t->close_deadline;
+        }
+    }
+    if (earliest < 0) return -1;
+    int64_t left = earliest - now_ms();
+    return left <= 0 ? 0 : (int)left;
+}
 
 void mr_forwarder_destroy(mr_forwarder *f) {
     if (!f) return;
