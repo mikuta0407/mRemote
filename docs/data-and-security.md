@@ -45,6 +45,18 @@ ProfileRecord
   createdAt / updatedAt / lastConnectedAt
 ```
 
+```text
+ProxyServer（schema v4、document の proxies に保存）
+  id: UUID
+  name: String
+  kind: socks5
+  host: String
+  port: UInt16
+  authentication: none   // 将来 user name + Keychain の credentialReference を足す
+```
+
+profile は `proxyID: UUID?` で保存済みプロキシを参照し、複数の profile が同じプロキシを共有する。プロキシを削除すると、参照していた profile の `proxyID` を同じ保存で外す（直接接続に戻る）。プロキシのホストとポートは秘密ではないので document に置き、複製した profile も同じプロキシを使う。プロキシの認証情報は現在扱わない。対応するときはパスワードを Keychain に置き、document には参照だけを置く。
+
 `protocolPayload` は RDP 固有項目を持つ。将来 SSH payload を追加しても共通 column と一覧 query を維持する。任意の FreeRDP command-line option 文字列を保存・注入する escape hatch は設けない。検証を迂回し、互換性と安全性を損なうためである。
 
 ### 2.2 RDPProfilePayload

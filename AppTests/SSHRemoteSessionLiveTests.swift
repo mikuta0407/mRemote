@@ -13,6 +13,9 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
     private var port: UInt16 = 0
     private var user = ""
     private var keyFile = Data()
+    /// OpenSSH's own SOCKS5 proxy (`ssh -D`) through the same sshd, when the
+    /// runner started one.
+    private var socksPort: UInt16?
 
     override func setUpWithError() throws {
         let environment = ProcessInfo.processInfo.environment
@@ -24,6 +27,7 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
         self.port = port
         self.user = user
         self.keyFile = try Data(contentsOf: URL(fileURLWithPath: keyPath))
+        socksPort = environment["MREMOTE_SSH_TEST_SOCKS_PORT"].flatMap { UInt16($0) }
     }
 
     private func makeSession(
@@ -31,17 +35,21 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
         knownHosts: InMemoryKnownHostRepository,
         keyID: SSHKeyID?,
         startupCommand: String? = nil,
-        forwards: [SSHPortForward]? = nil
+        forwards: [SSHPortForward]? = nil,
+        host: String = "127.0.0.1",
+        proxy: ProxyServer? = nil
     ) -> SSHRemoteSession {
-        let profile = ConnectionProfile(
+        var profile = ConnectionProfile(
             displayName: "live",
-            endpoint: RemoteEndpoint(host: "127.0.0.1", port: port),
+            endpoint: RemoteEndpoint(host: host, port: port),
             account: RemoteAccount(username: user),
             configuration: .ssh(SSHConfiguration(
                 authentication: SSHAuthentication(keyID: keyID, allowsKeyboardInteractive: false, allowsPassword: false),
                 startupCommand: startupCommand,
                 portForwards: forwards)))
-        let configuration = EffectiveProfileResolver().resolve(profile: profile, globalSettings: .default)
+        profile.proxyID = proxy?.id
+        let configuration = EffectiveProfileResolver().resolve(
+            profile: profile, globalSettings: .default, proxies: proxy.map { [$0] } ?? [])
         return SSHRemoteSession(
             configuration: configuration, credentials: InMemoryCredentialRepository(),
             knownHosts: knownHosts, keys: keys)
@@ -173,6 +181,39 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
             return String(decoding: buffer.prefix(max(0, n)), as: UTF8.self)
         }.value
         XCTAssertTrue(banner.hasPrefix("SSH-2.0-"), banner)
+        await session.disconnect(reason: .userRequested)
+    }
+
+    /// The name goes to the proxy unresolved: "localhost" is looked up on the
+    /// proxy's side.
+    func testAProxyCarriesTheConnection() async throws {
+        guard let socksPort else { throw XCTSkip("no SOCKS proxy (run_live_app_tests.sh starts one)") }
+        let keys = InMemorySSHKeyRepository()
+        let session = makeSession(
+            keys: keys, knownHosts: InMemoryKnownHostRepository(), keyID: try storeKey(in: keys),
+            startupCommand: "echo proxied-$((40+2))", host: "localhost",
+            proxy: ProxyServer(host: "127.0.0.1", port: socksPort))
+        try await session.connect()
+        try await wait(for: .connected, in: session)
+        let text = await output(of: session, containing: "proxied-42")
+        XCTAssertTrue(text.contains("proxied-42"), text)
+        await session.disconnect(reason: .userRequested)
+    }
+
+    func testAProxyThatIsNotThereIsSaidSo() async throws {
+        let session = makeSession(
+            keys: InMemorySSHKeyRepository(), knownHosts: InMemoryKnownHostRepository(), keyID: nil,
+            proxy: ProxyServer(host: "127.0.0.1", port: 1))
+        let events = await session.controlEvents()
+        try await session.connect()
+        var error: RemoteSessionError?
+        for await event in events {
+            if case .error(let reported) = event {
+                error = reported
+                break
+            }
+        }
+        XCTAssertEqual(error, .proxyUnreachable)
         await session.disconnect(reason: .userRequested)
     }
 

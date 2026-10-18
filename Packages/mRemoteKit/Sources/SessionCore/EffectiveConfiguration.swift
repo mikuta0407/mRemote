@@ -28,6 +28,8 @@ public struct EffectiveConnectionConfiguration: Hashable, Sendable {
     /// Set for an SSH connection, which then ignores the RDP settings above
     /// (they hold the global defaults, unused). docs/ssh-design.md 5.2.
     public let ssh: EffectiveSSHSettings?
+    /// The proxy the connection goes through; nil for a direct one.
+    public let proxy: ProxyServer?
 
     public var protocolKind: ProtocolKind { ssh == nil ? .rdp : .ssh }
 
@@ -52,7 +54,8 @@ public struct EffectiveConnectionConfiguration: Hashable, Sendable {
         prefersH264: Bool = true,
         remotePlatform: RemotePlatform = .standard,
         streamQuality: StreamQuality = .automatic,
-        ssh: EffectiveSSHSettings? = nil
+        ssh: EffectiveSSHSettings? = nil,
+        proxy: ProxyServer? = nil
     ) {
         self.profileID = profileID
         self.displayName = displayName
@@ -75,6 +78,7 @@ public struct EffectiveConnectionConfiguration: Hashable, Sendable {
         self.remotePlatform = remotePlatform
         self.streamQuality = streamQuality
         self.ssh = ssh
+        self.proxy = proxy
     }
 
     /// Eisu/Kana to Muhenkan/Henkan is only promised for the Japanese layout,
@@ -85,16 +89,21 @@ public struct EffectiveConnectionConfiguration: Hashable, Sendable {
 public struct EffectiveProfileResolver: Sendable {
     public init() {}
 
+    /// `proxies` are the saved ones the profile's `proxyID` names. A
+    /// reference to a proxy that is gone (deleteProxy clears them, so only a
+    /// hand-edited store has one) connects directly.
     public func resolve(
         profile: ConnectionProfile,
-        globalSettings: GlobalSettings
+        globalSettings: GlobalSettings,
+        proxies: [ProxyServer] = []
     ) -> EffectiveConnectionConfiguration {
+        let proxy = profile.proxyID.flatMap { id in proxies.first { $0.id == id } }
         let rdp: RDPConfiguration
         switch profile.configuration {
         case .rdp(let configuration):
             rdp = configuration
         case .ssh(let ssh):
-            return resolve(profile: profile, ssh: ssh, globalSettings: globalSettings)
+            return resolve(profile: profile, ssh: ssh, globalSettings: globalSettings, proxy: proxy)
         }
         return EffectiveConnectionConfiguration(
             profileID: profile.id,
@@ -116,7 +125,8 @@ public struct EffectiveProfileResolver: Sendable {
             redirectsMicrophone: rdp.redirectsMicrophone,
             prefersH264: rdp.prefersH264,
             remotePlatform: rdp.remotePlatform,
-            streamQuality: rdp.preferredStreamQuality
+            streamQuality: rdp.preferredStreamQuality,
+            proxy: proxy
         )
     }
 }
@@ -125,7 +135,8 @@ extension EffectiveProfileResolver {
     fileprivate func resolve(
         profile: ConnectionProfile,
         ssh: SSHConfiguration,
-        globalSettings: GlobalSettings
+        globalSettings: GlobalSettings,
+        proxy: ProxyServer?
     ) -> EffectiveConnectionConfiguration {
         let terminal = globalSettings.terminal
         let settings = EffectiveSSHSettings(
@@ -159,7 +170,8 @@ extension EffectiveProfileResolver {
             scrollDirection: globalSettings.scrollDirection,
             reconnectPolicy: ssh.reconnectPolicy.resolved(default: globalSettings.reconnectPolicy),
             securityPolicy: .secureAutomatic,
-            ssh: settings
+            ssh: settings,
+            proxy: proxy
         )
     }
 }

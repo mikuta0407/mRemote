@@ -423,6 +423,8 @@ static mr_rdp_status mr_mock_run(mr_rdp_backend *base)
         view.gateway_password = backend->config.gateway_password;
         view.drive_path = backend->config.drive_path;
         view.drive_name = backend->config.drive_name;
+        view.proxy_hostname = backend->config.proxy_hostname;
+        view.proxy_port = backend->config.proxy_port;
         backend->on_connection_config(backend->observer_context, &view);
     }
     if (backend->on_config != NULL) {

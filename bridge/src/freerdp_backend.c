@@ -4469,6 +4469,16 @@ static mr_rdp_status mr_freerdp_configure_settings(
         !mr_freerdp_configure_gateway(settings, config)) {
         return MR_RDP_ERROR_BACKEND;
     }
+    /* ABI 7. FreeRDP sends the name to the proxy unresolved (SOCKS5 domain
+     * address), for the gateway's connection as for the computer's. */
+    if (config->proxy_hostname != NULL &&
+        (!freerdp_settings_set_uint32(settings, FreeRDP_ProxyType, PROXY_TYPE_SOCKS) ||
+         !freerdp_settings_set_string_len(
+             settings, FreeRDP_ProxyHostname,
+             config->proxy_hostname, config->proxy_hostname_length) ||
+         !freerdp_settings_set_uint16(settings, FreeRDP_ProxyPort, config->proxy_port))) {
+        return MR_RDP_ERROR_BACKEND;
+    }
     if (config->remote_program != NULL &&
         (!freerdp_settings_set_bool(settings, FreeRDP_RemoteApplicationMode, TRUE) ||
          !freerdp_settings_set_string_len(

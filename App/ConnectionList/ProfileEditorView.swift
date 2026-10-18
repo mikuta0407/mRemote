@@ -50,6 +50,8 @@ struct ProfileEditorView: View {
                     }
                 }
 
+                proxySection
+
                 Section {
                     TextField("グループ（任意）", text: $model.group)
                         .accessibilityIdentifier("profile-group-field")
@@ -227,6 +229,28 @@ struct ProfileEditorView: View {
                     .accessibilityIdentifier("profile-save-button")
                 }
             }
+        }
+    }
+
+    private var proxySection: some View {
+        Section {
+            Picker("プロキシ", selection: $model.proxyID) {
+                Text("使わない").tag(ProxyID?.none)
+                ForEach(environment.proxies) { proxy in
+                    Text(proxy.displayName).tag(ProxyID?.some(proxy.id))
+                }
+            }
+            .accessibilityIdentifier("profile-proxy-picker")
+            .onChange(of: environment.proxies) { _, proxies in
+                // Deleted on the management screen meanwhile.
+                if let selected = model.proxyID, !proxies.contains(where: { $0.id == selected }) {
+                    model.proxyID = nil
+                }
+            }
+            NavigationLink("プロキシを管理…") { ProxiesView() }
+                .accessibilityIdentifier("profile-manage-proxies")
+        } footer: {
+            Text("SOCKS5 プロキシを経由して接続します。接続先の名前はプロキシが解決します。保存したプロキシはほかの接続先からも選べます。")
         }
     }
 

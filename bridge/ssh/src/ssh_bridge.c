@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -87,6 +88,9 @@ struct mr_ssh_session {
     char *term;
     mr_ssh_forward *forwards;
     size_t forward_count;
+    /* ABI 3. NULL for a direct connection. */
+    char *proxy_host;
+    uint16_t proxy_port;
     uint32_t keepalive_seconds;
     uint32_t connect_timeout_ms;
     mr_ssh_callbacks callbacks;
@@ -539,6 +543,7 @@ static int set_nonblocking(int fd) {
 static void free_copies(mr_ssh_session *s) {
     for (size_t i = 0; i < s->forward_count; i++) free((char *)s->forwards[i].remote_host);
     free(s->forwards);
+    free(s->proxy_host);
     free(s->host);
     free(s->username);
     free(s->term);
@@ -567,6 +572,20 @@ mr_ssh_status mr_ssh_session_create(
             return MR_SSH_ERROR_INVALID_ARGUMENT;
         }
     }
+    if (config->proxy_username || config->proxy_password) return MR_SSH_ERROR_INVALID_ARGUMENT;
+    if (config->proxy_type == MR_SSH_PROXY_NONE) {
+        if (config->proxy_host || config->proxy_port) return MR_SSH_ERROR_INVALID_ARGUMENT;
+    } else if (config->proxy_type == MR_SSH_PROXY_SOCKS5) {
+        /* The host goes to the proxy as a SOCKS5 domain name. */
+        if (!config->proxy_host || strnlen(config->proxy_host, MR_SSH_MAX_HOST_BYTES + 1) == 0 ||
+            strnlen(config->proxy_host, MR_SSH_MAX_HOST_BYTES + 1) > MR_SSH_MAX_HOST_BYTES ||
+            !config->host ||
+            strnlen(config->host, MR_SSH_MAX_PROXY_HOST_BYTES + 1) > MR_SSH_MAX_PROXY_HOST_BYTES) {
+            return MR_SSH_ERROR_INVALID_ARGUMENT;
+        }
+    } else {
+        return MR_SSH_ERROR_INVALID_ARGUMENT;
+    }
     if (config->port == 0 ||
         config->columns < MR_SSH_MIN_TERMINAL_DIMENSION || config->rows < MR_SSH_MIN_TERMINAL_DIMENSION ||
         config->columns > MR_SSH_MAX_TERMINAL_DIMENSION || config->rows > MR_SSH_MAX_TERMINAL_DIMENSION) {
@@ -586,6 +605,15 @@ mr_ssh_status mr_ssh_session_create(
         free_copies(s);
         free(s);
         return MR_SSH_ERROR_INVALID_ARGUMENT;
+    }
+    if (config->proxy_type == MR_SSH_PROXY_SOCKS5) {
+        s->proxy_host = copy_string(config->proxy_host, MR_SSH_MAX_HOST_BYTES);
+        if (!s->proxy_host) {
+            free_copies(s);
+            free(s);
+            return MR_SSH_ERROR_OUT_OF_MEMORY;
+        }
+        s->proxy_port = config->proxy_port ? config->proxy_port : 1080;
     }
     s->port = config->port;
     s->columns = config->columns;
@@ -882,18 +910,18 @@ static void *lookup_thread(void *argument) {
     return NULL;
 }
 
-/* Resolves the host. Returns its addresses (freeaddrinfo them), or NULL with
+/* Resolves host. Returns its addresses (freeaddrinfo them), or NULL with
  * failure and detail set: cancelled on a stop, timed out at deadline. */
-static struct addrinfo *resolve(mr_ssh_session *s, int64_t deadline, mr_ssh_failure *failure,
-                                int32_t *detail) {
+static struct addrinfo *resolve(mr_ssh_session *s, const char *host, uint16_t port, int64_t deadline,
+                                mr_ssh_failure *failure, int32_t *detail) {
     lookup *l = calloc(1, sizeof *l);
     if (!l) {
         *failure = MR_SSH_FAILURE_INTERNAL;
         return NULL;
     }
     l->pipe[0] = l->pipe[1] = -1;
-    l->host = copy_string(s->host, MR_SSH_MAX_HOST_BYTES);
-    snprintf(l->port, sizeof l->port, "%u", (unsigned)s->port);
+    l->host = copy_string(host, MR_SSH_MAX_HOST_BYTES);
+    snprintf(l->port, sizeof l->port, "%u", (unsigned)port);
     if (!l->host || pipe(l->pipe) != 0) {
         *detail = errno;
         if (l->pipe[0] >= 0) close(l->pipe[0]);
@@ -956,11 +984,11 @@ static struct addrinfo *resolve(mr_ssh_session *s, int64_t deadline, mr_ssh_fail
     return results;
 }
 
-/* Connects to the first address that answers. The lookup and the connect
- * share connect_timeout_ms. Returns 0, or -1 with failure and detail set. */
-static int connect_socket(mr_ssh_session *s, mr_ssh_failure *failure, int32_t *detail) {
-    int64_t deadline = now_ms() + s->connect_timeout_ms;
-    struct addrinfo *results = resolve(s, deadline, failure, detail);
+/* Connects to the first address of host that answers, by deadline. Returns
+ * 0, or -1 with failure and detail set. */
+static int connect_host(mr_ssh_session *s, const char *host, uint16_t port, int64_t deadline,
+                        mr_ssh_failure *failure, int32_t *detail) {
+    struct addrinfo *results = resolve(s, host, port, deadline, failure, detail);
     if (!results) return -1;
 
     int last_error = ETIMEDOUT;
@@ -1028,6 +1056,157 @@ static int connect_socket(mr_ssh_session *s, mr_ssh_failure *failure, int32_t *d
     *failure = failure_for_errno(last_error);
     *detail = last_error;
     return -1;
+}
+
+/* ---- the run thread: SOCKS5 ----------------------------------------------- */
+
+/* Sends or receives exactly length bytes on the socket by deadline. Returns 0,
+ * or -1 with failure set: cancelled, timed out, or (errno in detail, or 0 for
+ * an orderly close) disconnected. */
+static int socks_io(mr_ssh_session *s, int sending, uint8_t *bytes, size_t length, int64_t deadline,
+                    mr_ssh_failure *failure, int32_t *detail) {
+    size_t done = 0;
+    while (done < length) {
+        ssize_t n = sending ? send(s->socket_fd, bytes + done, length - done, 0)
+                            : recv(s->socket_fd, bytes + done, length - done, 0);
+        if (n > 0) {
+            done += (size_t)n;
+            continue;
+        }
+        if (n == 0 || (errno != EWOULDBLOCK && errno != EINTR)) {
+            *failure = MR_SSH_FAILURE_PROXY;
+            *detail = n == 0 ? -1 : errno;
+            return -1;
+        }
+        int64_t left = deadline - now_ms();
+        if (left <= 0) {
+            *failure = MR_SSH_FAILURE_TIMEOUT;
+            *detail = ETIMEDOUT;
+            return -1;
+        }
+        struct pollfd fds[2] = {
+            { .fd = s->socket_fd, .events = sending ? POLLOUT : POLLIN, .revents = 0 },
+            { .fd = s->wake_pipe[0], .events = POLLIN, .revents = 0 },
+        };
+        if (poll(fds, 2, (int)left) > 0 && (fds[1].revents & POLLIN)) drain_wake_pipe(s);
+        if (stop_requested(s)) {
+            *failure = MR_SSH_FAILURE_CANCELLED;
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* What a SOCKS5 reply code says, as a failure. */
+static mr_ssh_failure failure_for_socks_reply(uint8_t reply) {
+    switch (reply) {
+    case 3: /* network unreachable */
+    case 4: /* host unreachable */
+        return MR_SSH_FAILURE_UNREACHABLE;
+    case 5: return MR_SSH_FAILURE_REFUSED;
+    case 6: return MR_SSH_FAILURE_TIMEOUT; /* TTL expired */
+    default: return MR_SSH_FAILURE_PROXY;
+    }
+}
+
+/* Asks the proxy on the connected socket to connect to host:port (RFC 1928,
+ * no sign-in). The host goes as a domain name - the proxy resolves it -
+ * unless it is an IP literal. Returns 0, or -1 with failure and detail set. */
+static int socks5_connect(mr_ssh_session *s, const char *host, uint16_t port, int64_t deadline,
+                          mr_ssh_failure *failure, int32_t *detail) {
+    uint8_t buffer[4 + 1 + 255 + 2];
+    /* Version 5, one method: no sign-in. */
+    buffer[0] = 5;
+    buffer[1] = 1;
+    buffer[2] = 0;
+    if (socks_io(s, 1, buffer, 3, deadline, failure, detail) != 0) return -1;
+    if (socks_io(s, 0, buffer, 2, deadline, failure, detail) != 0) return -1;
+    if (buffer[0] != 5) {
+        *failure = MR_SSH_FAILURE_PROXY;
+        *detail = -1;
+        return -1;
+    }
+    if (buffer[1] != 0) {
+        /* 0xFF: none of ours. Anything else is a method we did not offer. */
+        *failure = MR_SSH_FAILURE_PROXY;
+        *detail = buffer[1] == 0xFF ? 0xFF : -1;
+        return -1;
+    }
+
+    size_t length = 0;
+    buffer[length++] = 5;
+    buffer[length++] = 1; /* CONNECT */
+    buffer[length++] = 0;
+    struct in_addr v4;
+    struct in6_addr v6;
+    if (inet_pton(AF_INET, host, &v4) == 1) {
+        buffer[length++] = 1;
+        memcpy(buffer + length, &v4, 4);
+        length += 4;
+    } else if (inet_pton(AF_INET6, host, &v6) == 1) {
+        buffer[length++] = 4;
+        memcpy(buffer + length, &v6, 16);
+        length += 16;
+    } else {
+        size_t name_length = strlen(host); /* at most 255: create checked */
+        buffer[length++] = 3;
+        buffer[length++] = (uint8_t)name_length;
+        memcpy(buffer + length, host, name_length);
+        length += name_length;
+    }
+    buffer[length++] = (uint8_t)(port >> 8);
+    buffer[length++] = (uint8_t)(port & 0xFF);
+    if (socks_io(s, 1, buffer, length, deadline, failure, detail) != 0) return -1;
+
+    /* Version, reply, reserved, address type; then the bound address, which
+     * is read and dropped so that the SSH banner starts clean. */
+    if (socks_io(s, 0, buffer, 4, deadline, failure, detail) != 0) return -1;
+    if (buffer[0] != 5) {
+        *failure = MR_SSH_FAILURE_PROXY;
+        *detail = -1;
+        return -1;
+    }
+    if (buffer[1] != 0) {
+        *failure = failure_for_socks_reply(buffer[1]);
+        *detail = buffer[1];
+        return -1;
+    }
+    size_t rest;
+    switch (buffer[3]) {
+    case 1: rest = 4 + 2; break;
+    case 4: rest = 16 + 2; break;
+    case 3:
+        if (socks_io(s, 0, buffer, 1, deadline, failure, detail) != 0) return -1;
+        rest = (size_t)buffer[0] + 2;
+        break;
+    default:
+        *failure = MR_SSH_FAILURE_PROXY;
+        *detail = -1;
+        return -1;
+    }
+    return socks_io(s, 0, buffer, rest, deadline, failure, detail);
+}
+
+/* Connects to the server, through the proxy when there is one. The lookups,
+ * the connects and the proxy's handshake share connect_timeout_ms. Returns
+ * 0, or -1 with failure and detail set. */
+static int connect_socket(mr_ssh_session *s, mr_ssh_failure *failure, int32_t *detail) {
+    int64_t deadline = now_ms() + s->connect_timeout_ms;
+    if (!s->proxy_host) return connect_host(s, s->host, s->port, deadline, failure, detail);
+
+    if (connect_host(s, s->proxy_host, s->proxy_port, deadline, failure, detail) != 0) {
+        /* The proxy's own name, refusal or silence. */
+        if (*failure != MR_SSH_FAILURE_CANCELLED && *failure != MR_SSH_FAILURE_INTERNAL) {
+            *failure = MR_SSH_FAILURE_PROXY_UNREACHABLE;
+        }
+        return -1;
+    }
+    if (socks5_connect(s, s->host, s->port, deadline, failure, detail) != 0) {
+        close(s->socket_fd);
+        s->socket_fd = -1;
+        return -1;
+    }
+    return 0;
 }
 
 static mr_ssh_failure failure_for_libssh2(int rc) {

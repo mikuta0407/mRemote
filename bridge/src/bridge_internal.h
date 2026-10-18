@@ -58,6 +58,11 @@ typedef struct mr_rdp_owned_config {
     size_t remote_arguments_length;
     /* ABI 6. Zero unless channel_flags has MACRDPX. */
     uint32_t macrdpx_caps;
+    /* ABI 7. hostname NULL for no proxy. */
+    mr_rdp_proxy_type proxy_type;
+    char *proxy_hostname;
+    size_t proxy_hostname_length;
+    uint16_t proxy_port;
 } mr_rdp_owned_config;
 
 typedef struct mr_rdp_backend_clipboard_offer {

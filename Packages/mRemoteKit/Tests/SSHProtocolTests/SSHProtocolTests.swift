@@ -159,6 +159,11 @@ final class SSHFailureTests: XCTestCase {
         XCTAssertEqual(SSHBridgeFailure.hostKeyRejected.sessionError(detail: 0), .hostKeyRejected)
         XCTAssertFalse(RemoteSessionError.hostKeyRejected.isRetriable)
         XCTAssertFalse(SSHBridgeFailure.authentication.sessionError(detail: 0)!.isRetriable)
+        XCTAssertEqual(SSHBridgeFailure.proxyUnreachable.sessionError(detail: 61), .proxyUnreachable)
+        XCTAssertEqual(SSHBridgeFailure.proxy.sessionError(detail: 0xFF), .proxyRefused)
+        XCTAssertTrue(RemoteSessionError.proxyUnreachable.isRetriable)
+        XCTAssertFalse(RemoteSessionError.proxyRefused.isRetriable)
+        XCTAssertEqual(SSHBridgeFailure.allCases.last?.rawValue, 14, "mirrors mr_ssh_failure")
     }
 
     func testTheFingerprintMatchesOpenSSH() {

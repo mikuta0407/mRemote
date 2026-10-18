@@ -281,6 +281,31 @@ if(BUILD_TESTING)
     add_test(NAME mremote_abi6.contract COMMAND mremote_abi6_contract_tests)
     set_tests_properties(mremote_abi6.contract PROPERTIES TIMEOUT 20)
 
+    add_executable(mremote_abi7_contract_tests tests/abi7_contract_tests.c)
+    target_compile_features(mremote_abi7_contract_tests PRIVATE c_std_11)
+    target_include_directories(mremote_abi7_contract_tests PRIVATE
+        test_support/include
+        src
+    )
+    target_link_libraries(mremote_abi7_contract_tests PRIVATE
+        mremote_rdp_bridge
+        Threads::Threads
+    )
+    if(CMAKE_C_COMPILER_ID MATCHES "AppleClang|Clang|GNU")
+        target_compile_options(mremote_abi7_contract_tests PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+        if(MR_BRIDGE_WARNINGS_AS_ERRORS)
+            target_compile_options(mremote_abi7_contract_tests PRIVATE -Werror)
+        endif()
+    endif()
+    if(NOT MR_BRIDGE_SANITIZER STREQUAL "none")
+        target_compile_options(mremote_abi7_contract_tests PRIVATE ${_mr_sanitizer_flags})
+        target_link_options(mremote_abi7_contract_tests PRIVATE ${_mr_sanitizer_flags})
+    endif()
+    add_test(NAME mremote_abi7.contract COMMAND mremote_abi7_contract_tests)
+    set_tests_properties(mremote_abi7.contract PROPERTIES TIMEOUT 20)
+
     add_executable(mremote_rdpsnd_contract_tests tests/rdpsnd_contract_tests.c)
     target_compile_features(mremote_rdpsnd_contract_tests PRIVATE c_std_11)
     target_link_libraries(mremote_rdpsnd_contract_tests PRIVATE

@@ -282,17 +282,22 @@ public enum RemoteSessionError: Hashable, Sendable, Error {
     case protocolFailure(detail: String)
     case resourceUnavailable
     case internalFailure(detail: String)
+    /// The proxy could not be reached: its name, its port, or the network.
+    case proxyUnreachable
+    /// The proxy answered but would not carry the connection: it wants a
+    /// sign-in, its rules refuse it, or it is not a SOCKS5 proxy.
+    case proxyRefused
 
     /// Whether an automatic retry could plausibly succeed without the user
     /// changing anything. Retrying an authentication failure risks locking the
     /// account out, so it is deliberately excluded.
     public var isRetriable: Bool {
         switch self {
-        case .networkUnreachable, .connectionTimedOut, .protocolFailure:
+        case .networkUnreachable, .connectionTimedOut, .protocolFailure, .proxyUnreachable:
             return true
         case .nameResolutionFailed, .connectionRefused, .tlsHandshakeFailed, .securityNegotiationFailed,
              .authenticationFailed, .accountRestricted, .certificateRejected, .hostKeyRejected,
-             .userCancelled, .resourceUnavailable, .internalFailure:
+             .userCancelled, .resourceUnavailable, .internalFailure, .proxyRefused:
             return false
         }
     }

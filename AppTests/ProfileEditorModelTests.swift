@@ -60,6 +60,25 @@ final class ProfileEditorModelTests: XCTestCase {
         XCTAssertEqual(profile?.endpoint.host, "desk.example")
     }
 
+    func testTheProxyIsKeptAndCanBeCleared() {
+        let proxy = ProxyID()
+        var existing = ConnectionProfile(
+            displayName: "shell",
+            endpoint: RemoteEndpoint(host: "shell.example", port: 22),
+            configuration: .ssh(SSHConfiguration()))
+        existing.proxyID = proxy
+        let model = ProfileEditorModel(mode: .edit(existing))
+        XCTAssertEqual(model.proxyID, proxy)
+        XCTAssertEqual(model.makeProfile()?.proxyID, proxy)
+        model.proxyID = nil
+        XCTAssertNil(model.makeProfile()?.proxyID)
+
+        let rdp = ProfileEditorModel(mode: .create)
+        rdp.host = "desk.example"
+        rdp.proxyID = proxy
+        XCTAssertEqual(rdp.makeProfile()?.proxyID, proxy)
+    }
+
     func testEditingKeepsTheIdentityAndCredentialReference() {
         let reference = CredentialReference()
         var existing = ConnectionProfile(

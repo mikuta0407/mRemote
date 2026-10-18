@@ -14,15 +14,19 @@ public struct ProfileDocument: Hashable, Sendable, Codable {
     public var schemaVersion: SchemaVersion
     public var profiles: [ConnectionProfile]
     public var globalSettings: GlobalSettings
+    /// Schema v4. The saved proxies profiles pick from.
+    public var proxies: [ProxyServer]
 
     public init(
         schemaVersion: SchemaVersion = .current,
         profiles: [ConnectionProfile] = [],
-        globalSettings: GlobalSettings = .default
+        globalSettings: GlobalSettings = .default,
+        proxies: [ProxyServer] = []
     ) {
         self.schemaVersion = schemaVersion
         self.profiles = profiles
         self.globalSettings = globalSettings
+        self.proxies = proxies
     }
 }
 

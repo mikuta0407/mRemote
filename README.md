@@ -75,6 +75,11 @@ own screen, at Retina pixels for a Retina client. Any other server stays
 plain RDP; see
 [`docs/input-design.md`](docs/input-design.md) section 13.
 
+Either kind of connection can go through a SOCKS5 proxy. Proxies are saved
+once (Settings, or the connection editor) and picked per connection; the proxy
+resolves the computer's name, so names known only beyond it work. Proxies that
+ask for a user name and password are not supported yet.
+
 ## Install
 
 **macOS** (Apple silicon, macOS 14 or later), with Homebrew:

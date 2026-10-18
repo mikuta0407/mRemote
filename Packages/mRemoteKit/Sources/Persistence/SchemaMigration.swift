@@ -21,8 +21,12 @@ public struct SchemaVersion: RawRepresentable, Hashable, Comparable, Sendable, C
     /// only v2 refuses a v3 store as from the future instead of failing to
     /// decode an SSH profile and calling the file malformed.
     public static let v3 = SchemaVersion(3)
+    /// Adds the saved proxies and `ConnectionProfile.proxyID`. A v3 build
+    /// would drop the proxies it does not know when it next saves, so it
+    /// refuses the store instead.
+    public static let v4 = SchemaVersion(4)
     /// The version this build writes.
-    public static let current = v3
+    public static let current = v4
 }
 
 /// One step of the upgrade path. Steps are single-version so the chain can be
@@ -53,6 +57,7 @@ public struct SchemaMigrator: Sendable {
     public static let standardMigrations: [any SchemaMigration] = [
         AddSoftwareKeyboardModeMigration(),
         AddTerminalDefaultsMigration(),
+        AddProxiesMigration(),
     ]
 
     public init(
@@ -160,6 +165,25 @@ public struct AddTerminalDefaultsMigration: SchemaMigration {
             ])
         }
         object["globalSettings"] = .object(settings)
+        return .object(object)
+    }
+}
+
+/// v3 -> v4: an empty list of saved proxies. Profiles gain an optional
+/// `proxyID`, absent meaning a direct connection, so they need nothing.
+public struct AddProxiesMigration: SchemaMigration {
+    public let source = SchemaVersion.v3
+    public let destination = SchemaVersion.v4
+
+    public init() {}
+
+    public func migrate(_ document: JSONValue) throws -> JSONValue {
+        guard var object = document.objectValue else {
+            throw StoreError.malformedDocument(detail: "the document is not an object")
+        }
+        if object["proxies"] == nil {
+            object["proxies"] = .array([])
+        }
         return .object(object)
     }
 }

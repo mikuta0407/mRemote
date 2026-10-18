@@ -280,6 +280,7 @@ static void mr_owned_config_destroy(mr_rdp_owned_config *config)
     mr_secure_free(&config->gateway_username, &config->gateway_username_length);
     mr_secure_free(&config->gateway_domain, &config->gateway_domain_length);
     free(config->gateway_hostname);
+    free(config->proxy_hostname);
     free(config->drive_path);
     free(config->drive_name);
     free(config->remote_program);
@@ -1393,6 +1394,28 @@ static mr_rdp_status mr_validate_gateway(const mr_rdp_config *config)
         : MR_RDP_ERROR_INVALID_ARGUMENT;
 }
 
+static mr_rdp_status mr_validate_proxy(const mr_rdp_config *config)
+{
+    size_t hostname_length;
+    if (config->reserved_abi7 != 0u ||
+        config->proxy_username != NULL || config->proxy_username_length != 0u ||
+        config->proxy_password != NULL || config->proxy_password_length != 0u) {
+        return MR_RDP_ERROR_INVALID_ARGUMENT;
+    }
+    if (config->proxy_type == MR_RDP_PROXY_NONE) {
+        return config->proxy_hostname == NULL && config->proxy_port == 0u
+            ? MR_RDP_STATUS_OK
+            : MR_RDP_ERROR_INVALID_ARGUMENT;
+    }
+    if (config->proxy_type != MR_RDP_PROXY_SOCKS5) {
+        return MR_RDP_ERROR_INVALID_ARGUMENT;
+    }
+    hostname_length = mr_bounded_string_length(config->proxy_hostname, 253u);
+    return hostname_length == 0u || hostname_length > 253u
+        ? MR_RDP_ERROR_INVALID_ARGUMENT
+        : MR_RDP_STATUS_OK;
+}
+
 static mr_rdp_status mr_validate_drive(const mr_rdp_config *config)
 {
     size_t index;
@@ -1454,6 +1477,7 @@ static mr_rdp_status mr_validate_config(const mr_rdp_config *config, size_t *out
         return MR_RDP_ERROR_INVALID_ARGUMENT;
     }
     if (mr_validate_gateway(config) != MR_RDP_STATUS_OK ||
+        mr_validate_proxy(config) != MR_RDP_STATUS_OK ||
         mr_validate_drive(config) != MR_RDP_STATUS_OK ||
         !mr_valid_span(config->remote_program, config->remote_program_length,
                        MR_RDP_MAX_REMOTE_PROGRAM_BYTES, 1) ||
@@ -1662,6 +1686,20 @@ mr_rdp_status mr_rdp_session_create_internal(
         if (status != MR_RDP_STATUS_OK) {
             goto fail;
         }
+    }
+    if (config->proxy_type == MR_RDP_PROXY_SOCKS5) {
+        session->config.proxy_type = config->proxy_type;
+        session->config.proxy_hostname_length =
+            mr_bounded_string_length(config->proxy_hostname, 253u);
+        status = mr_copy_string_span(
+            config->proxy_hostname, session->config.proxy_hostname_length,
+            &session->config.proxy_hostname);
+        if (status != MR_RDP_STATUS_OK) {
+            goto fail;
+        }
+        session->config.proxy_port = config->proxy_port == 0u
+            ? (uint16_t)MR_RDP_DEFAULT_PROXY_PORT
+            : config->proxy_port;
     }
     session->config.macrdpx_caps = config->macrdpx_caps;
     session->callback_context = context;

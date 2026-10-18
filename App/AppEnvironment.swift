@@ -24,6 +24,8 @@ final class AppEnvironment {
     private(set) var repository: ProfileRepository?
     private(set) var profiles: [ConnectionProfile] = []
     private(set) var globalSettings: GlobalSettings = .default
+    /// The saved proxies connections pick from.
+    private(set) var proxies: [ProxyServer] = []
     private(set) var loadFailure: String?
 
     var presentedSession: SessionWorkspaceModel?
@@ -139,6 +141,34 @@ final class AppEnvironment {
         guard let repository else { return }
         profiles = await repository.profiles
         globalSettings = await repository.globalSettings
+        proxies = await repository.proxies
+    }
+
+    func saveProxy(_ proxy: ProxyServer) async {
+        guard let repository else { return }
+        do {
+            try await repository.upsertProxy(proxy)
+            await refresh()
+        } catch {
+            listMessage = String(localized: "プロキシを保存できませんでした（\(String(describing: error))）。")
+            logger.error("saving a proxy failed")
+        }
+    }
+
+    /// The connections that used it connect directly afterwards.
+    func deleteProxy(_ proxy: ProxyServer) async {
+        guard let repository else { return }
+        do {
+            try await repository.deleteProxy(id: proxy.id)
+            await refresh()
+        } catch {
+            listMessage = String(localized: "プロキシを削除できませんでした（\(String(describing: error))）。")
+            logger.error("deleting a proxy failed")
+        }
+    }
+
+    func profileCount(usingProxy id: ProxyID) -> Int {
+        profiles.filter { $0.proxyID == id }.count
     }
 
     func save(_ profile: ConnectionProfile, password: String?, gatewayPassword: String? = nil) async {

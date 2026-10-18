@@ -18,6 +18,8 @@ public enum SSHBridgeFailure: UInt32, Sendable, CaseIterable {
     case disconnected = 10
     case cancelled = 11
     case `internal` = 12
+    case proxyUnreachable = 13
+    case proxy = 14
 
     /// docs/ssh-design.md section 10.
     public func sessionError(detail: Int32) -> RemoteSessionError? {
@@ -35,6 +37,8 @@ public enum SSHBridgeFailure: UInt32, Sendable, CaseIterable {
         case .disconnected: return .networkUnreachable
         case .cancelled: return .userCancelled
         case .internal: return .internalFailure(detail: "ssh \(detail)")
+        case .proxyUnreachable: return .proxyUnreachable
+        case .proxy: return .proxyRefused
         }
     }
 }

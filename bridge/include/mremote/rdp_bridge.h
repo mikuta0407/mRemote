@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define MR_RDP_BRIDGE_ABI_VERSION 6u
+#define MR_RDP_BRIDGE_ABI_VERSION 7u
 #define MR_RDP_DEFAULT_PORT 3389u
 #define MR_RDP_DEFAULT_CERTIFICATE_TIMEOUT_MS 30000u
 #define MR_RDP_MAX_CERTIFICATE_CHAIN 16u
@@ -53,6 +53,8 @@ extern "C" {
 #define MR_RDP_MAX_CLIPBOARD_FILE_NAME_BYTES 1024u
 #define MR_RDP_MAX_REMOTE_PROGRAM_BYTES 1024u
 #define MR_RDP_MAX_AUDIO_CAPTURE_PACKET_BYTES (64u * 1024u)
+/* ABI 7. */
+#define MR_RDP_DEFAULT_PROXY_PORT 1080u
 
 typedef struct mr_rdp_session mr_rdp_session;
 typedef int32_t mr_rdp_status;
@@ -136,6 +138,14 @@ enum {
     MR_RDP_GATEWAY_FLAG_BYPASS_LOCAL = 1u << 1
 };
 
+/* ABI 7. */
+typedef uint16_t mr_rdp_proxy_type;
+enum {
+    MR_RDP_PROXY_NONE = 0,
+    /* RFC 1928, CONNECT, without a sign-in. */
+    MR_RDP_PROXY_SOCKS5 = 1
+};
+
 typedef struct mr_rdp_config {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -184,7 +194,26 @@ typedef struct mr_rdp_config {
      * non-zero exactly when channel_flags has MR_RDP_CHANNEL_FLAG_MACRDPX. */
     uint32_t macrdpx_caps;
     uint32_t reserved_abi6;
+    /* ABI 7. A proxy every connection of the session goes through. */
+    mr_rdp_proxy_type proxy_type;
+    uint16_t proxy_port;
+    uint32_t reserved_abi7;
+    const char *proxy_hostname;
+    /* Reserved for a sign-in at the proxy (RFC 1929): NULL/0. */
+    const char *proxy_username;
+    size_t proxy_username_length;
+    const char *proxy_password;
+    size_t proxy_password_length;
 } mr_rdp_config;
+
+/* ABI 7: with MR_RDP_PROXY_SOCKS5, proxy_hostname is a NUL-terminated name or
+ * IP literal of at most 253 bytes, reached on proxy_port (zero selects 1080).
+ * The computer, and a gateway when there is one, are then reached through the
+ * proxy, which resolves their names: the device does not. With
+ * MR_RDP_PROXY_NONE, proxy_hostname is NULL and proxy_port zero. Other types,
+ * a sign-in, and a non-zero reserved_abi7 are rejected. A proxy that cannot
+ * be reached, or will not connect, fails the connect as FreeRDP reports it
+ * (MR_RDP_ERROR_BACKEND with its connect error). */
 
 /* ABI 5: remote_program is a span of 1...MR_RDP_MAX_REMOTE_PROGRAM_BYTES with
  * no embedded NUL, or NULL/0; remote_arguments likewise, and only with a

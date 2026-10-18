@@ -101,6 +101,43 @@ public actor ProfileRepository {
 
     public var globalSettings: GlobalSettings { document.globalSettings }
 
+    // MARK: Proxies
+
+    public var proxies: [ProxyServer] {
+        document.proxies.sorted { lhs, rhs in
+            lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+        }
+    }
+
+    public func proxy(id: ProxyID) -> ProxyServer? {
+        document.proxies.first { $0.id == id }
+    }
+
+    public func upsertProxy(_ proxy: ProxyServer) async throws {
+        if let index = document.proxies.firstIndex(where: { $0.id == proxy.id }) {
+            document.proxies[index] = proxy
+        } else {
+            document.proxies.append(proxy)
+        }
+        try await persist()
+    }
+
+    /// How many profiles go through the proxy: deleting it turns them into
+    /// direct connections, so the list says so first.
+    public func profileCount(usingProxy id: ProxyID) -> Int {
+        document.profiles.filter { $0.proxyID == id }.count
+    }
+
+    /// Removes the proxy, and the reference to it from every profile, in one
+    /// save: a profile never points at a proxy that is gone.
+    public func deleteProxy(id: ProxyID) async throws {
+        document.proxies.removeAll { $0.id == id }
+        for index in document.profiles.indices where document.profiles[index].proxyID == id {
+            document.profiles[index].proxyID = nil
+        }
+        try await persist()
+    }
+
     public func profile(id: ProfileID) -> ConnectionProfile? {
         document.profiles.first { $0.id == id }
     }
@@ -151,7 +188,8 @@ public actor ProfileRepository {
         resolver: EffectiveProfileResolver = EffectiveProfileResolver()
     ) -> EffectiveConnectionConfiguration? {
         guard let profile = profile(id: id) else { return nil }
-        return resolver.resolve(profile: profile, globalSettings: document.globalSettings)
+        return resolver.resolve(
+            profile: profile, globalSettings: document.globalSettings, proxies: document.proxies)
     }
 
     private func persist() async throws {

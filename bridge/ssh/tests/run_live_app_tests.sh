@@ -14,7 +14,9 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/mr-ssh-live.XXXXXX")"
 sshd_pid=""
+socks_pid=""
 cleanup() {
+    [[ -n "$socks_pid" ]] && kill "$socks_pid" 2>/dev/null || true
     [[ -n "$sshd_pid" ]] && kill "$sshd_pid" 2>/dev/null || true
     rm -rf "$work"
 }
@@ -43,7 +45,17 @@ CONFIG
 sshd_pid=$!
 for _ in $(seq 50); do nc -z 127.0.0.1 "$port" 2>/dev/null && break; sleep 0.1; done
 
+# A SOCKS5 proxy, as a user would have one: OpenSSH's dynamic forward
+# through the same sshd.
+socks_port=$(( port + 1 ))
+ssh -N -D "127.0.0.1:$socks_port" -p "$port" -i "$work/user_ed25519" \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+    "$(id -un)@127.0.0.1" &
+socks_pid=$!
+for _ in $(seq 50); do nc -z 127.0.0.1 "$socks_port" 2>/dev/null && break; sleep 0.1; done
+
 cd "$REPO"
+TEST_RUNNER_MREMOTE_SSH_TEST_SOCKS_PORT="$socks_port" \
 TEST_RUNNER_MREMOTE_SSH_TEST_PORT="$port" \
 TEST_RUNNER_MREMOTE_SSH_TEST_USER="$(id -un)" \
 TEST_RUNNER_MREMOTE_SSH_TEST_KEY="$work/user_ed25519" \

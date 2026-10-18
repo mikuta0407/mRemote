@@ -77,9 +77,37 @@ final class ProfileDocumentCodecTests: XCTestCase {
         let v2 = try JSONSerialization.data(withJSONObject: object)
 
         let decoded = try ProfileDocumentCodec().decode(v2)
-        XCTAssertEqual(decoded.schemaVersion, .v3)
+        XCTAssertEqual(decoded.schemaVersion, .current)
         XCTAssertEqual(decoded.globalSettings.terminal, TerminalDefaults())
         XCTAssertEqual(decoded.profiles, document.profiles)
+    }
+
+    func testAVersionThreeDocumentGainsAnEmptyProxyList() throws {
+        // A store written before proxies: no list, no profile names one.
+        let encoded = try ProfileDocumentCodec().encode(sample)
+        var object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "proxies")
+        object["schemaVersion"] = 3
+        let v3 = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try ProfileDocumentCodec().decode(v3)
+        XCTAssertEqual(decoded.schemaVersion, .v4)
+        XCTAssertEqual(decoded.proxies, [])
+        XCTAssertEqual(decoded.profiles, sample.profiles)
+        XCTAssertTrue(decoded.profiles.allSatisfy { $0.proxyID == nil })
+    }
+
+    func testProxiesAndTheirUseSurviveTheRoundTrip() throws {
+        var document = sample
+        let proxy = ProxyServer(name: "office", host: "socks.example", port: 1081)
+        document.proxies = [proxy]
+        document.profiles[1].proxyID = proxy.id
+        let codec = ProfileDocumentCodec()
+        let decoded = try codec.decode(try codec.encode(document))
+        XCTAssertEqual(decoded, document)
+        XCTAssertEqual(decoded.profiles[1].proxyID, proxy.id)
     }
 
     func testAnSSHProfileSurvivesTheRoundTrip() throws {

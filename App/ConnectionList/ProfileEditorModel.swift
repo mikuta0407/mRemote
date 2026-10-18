@@ -76,6 +76,8 @@ final class ProfileEditorModel: Identifiable {
 
     var group = ""
     var isFavorite = false
+    /// The saved proxy to connect through; nil for a direct connection.
+    var proxyID: ProxyID?
     var redirectsMicrophone = false
     var usesH264 = true
     var remotePlatform = RemotePlatform.standard
@@ -134,6 +136,7 @@ final class ProfileEditorModel: Identifiable {
             let rdp = profile.configuration.rdp ?? RDPConfiguration()
             group = profile.group ?? ""
             isFavorite = profile.isFavorite
+            proxyID = profile.proxyID
             redirectsMicrophone = rdp.redirectsMicrophone
             usesH264 = rdp.prefersH264
             remotePlatform = rdp.remotePlatform
@@ -375,6 +378,7 @@ final class ProfileEditorModel: Identifiable {
     private func applyCommon(to profile: inout ConnectionProfile, now: Date) {
         profile.group = group.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : group
         profile.isFavorite = isFavorite
+        profile.proxyID = proxyID
         profile.wakeOnLAN = wakesOnLAN
             ? WakeOnLANConfiguration(
                 macAddress: macAddress.trimmingCharacters(in: .whitespaces),

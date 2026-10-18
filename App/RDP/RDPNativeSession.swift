@@ -72,6 +72,8 @@ struct RDPNativeConnection: Sendable {
     /// The Mac extensions (MRX_CAP_*) to offer; zero for none. channelFlags
     /// carries MR_RDP_CHANNEL_FLAG_MACRDPX with it.
     var macrdpxCaps: UInt32 = 0
+    /// A SOCKS5 proxy every connection goes through.
+    var proxy: (host: String, port: UInt16)?
 
     struct Gateway: Sendable {
         let host: String
@@ -417,6 +419,11 @@ final class RDPNativeSession: @unchecked Sendable {
             config.gateway_flags = flags
         }
         defer { gatewayPassword?.clear() }
+        if let proxy = connection.proxy {
+            config.proxy_type = mr_rdp_proxy_type(MR_RDP_PROXY_SOCKS5)
+            config.proxy_hostname = UnsafePointer(cString(proxy.host))
+            config.proxy_port = proxy.port
+        }
 
         let opaque = Unmanaged.passUnretained(context).toOpaque()
         var session: OpaquePointer?

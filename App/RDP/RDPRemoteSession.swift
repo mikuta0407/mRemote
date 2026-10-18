@@ -607,6 +607,9 @@ actor RDPRemoteSession: DesktopSession, AudioCapableSession, ClipboardCapableSes
         }
         macStatus = nil
         connection.gateway = gatewayConnection()
+        if let proxy = configuration.proxy {
+            connection.proxy = (proxy.host, proxy.port)
+        }
         if let remoteApp = configuration.remoteApp, !remoteApp.program.isEmpty {
             connection.remoteApp = (remoteApp.program, remoteApp.arguments)
         }
@@ -740,7 +743,8 @@ actor RDPRemoteSession: DesktopSession, AudioCapableSession, ClipboardCapableSes
 
         case let .failure(status, nativeCode, generation):
             guard generation == machine.generation.rawValue else { return }
-            let cause = RDPErrorMapper.classify(status: status, nativeCode: nativeCode)
+            var cause = RDPErrorMapper.classify(status: status, nativeCode: nativeCode)
+            if configuration.proxy != nil { cause = RDPErrorMapper.throughProxy(cause) }
             terminationCause = cause
             logger.sessionError("native failure \(status.name) code=\(nativeCode) -> \(cause)")
             if case .failed(let error) = cause {

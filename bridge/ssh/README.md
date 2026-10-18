@@ -4,6 +4,7 @@
 
 - libssh2 に触るのは `mr_ssh_session_run` を呼んだ thread だけ。callback もその thread で直列に呼ぶ。他の API は任意の thread から呼べ、queue に積んで self-pipe で起こすだけ。
 - ホスト鍵・認証・keyboard-interactive は challenge ID 付きで一度だけ答えられる。stop は待機中の challenge と I/O 待ちの両方を起こす。
+- ABI 3 の SOCKS5 プロキシ（`proxy_type`、`proxy_host`、`proxy_port`）は、プロキシに TCP でつないだあと run thread 上で RFC 1928 の CONNECT を交わす。接続先はホスト名のまま渡し（IP literal なら IPv4/IPv6 address）、端末は名前を引かない。プロキシの名前解決・TCP 接続・handshake は `connect_timeout_ms` を共有し、stop で中断できる。プロキシに届かなければ `MR_SSH_FAILURE_PROXY_UNREACHABLE`、サインインを求める・規則で拒否する・SOCKS5 でない応答は `MR_SSH_FAILURE_PROXY`、接続先に届かない・拒否された・時間切れはそれぞれ `UNREACHABLE`/`REFUSED`/`TIMEOUT`（detail は SOCKS の reply code）。サインイン（RFC 1929）の欄は予約で、いまは NULL 以外を拒否する。
 - 名前解決は使い捨ての thread で行い、run thread は結果・stop・`connect_timeout_ms`（名前解決と TCP 接続で共有）のどれか早いものを待つ。打ち切られた解決は thread が終わり次第自分で片付ける。
 - libssh2 の送信は bridge の send queue が全部受け取り、socket が取らなかった分は poll で後から送る（`send_callback`）。libssh2 に送りかけの packet が残らないので、どの状態で stop しても teardown は短時間で終わり、session を解放しきれる。
 - forward の閉じかけの tunnel がサーバーの CLOSE を 10 秒待っても来なければ諦め、枠を空ける（channel は session と一緒に解放。諦めた channel は最大 8 本）。

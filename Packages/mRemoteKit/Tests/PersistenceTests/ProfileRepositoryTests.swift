@@ -64,6 +64,50 @@ final class ProfileRepositoryTests: XCTestCase {
         XCTAssertEqual(resolved?.scrollDirection, .reversed)
     }
 
+    func testAProfileConnectsThroughItsProxy() async throws {
+        let repository = try await ProfileRepository(store: InMemoryProfileStore())
+        let proxy = ProxyServer(host: "socks.example")
+        try await repository.upsertProxy(proxy)
+        var desk = profile("desk")
+        desk.proxyID = proxy.id
+        try await repository.upsert(desk)
+
+        let resolved = await repository.effectiveConfiguration(for: desk.id)
+        XCTAssertEqual(resolved?.proxy, proxy)
+
+        // An edit reaches every profile that uses it.
+        var moved = proxy
+        moved.port = 9050
+        try await repository.upsertProxy(moved)
+        await AsyncAssertEqual(await repository.effectiveConfiguration(for: desk.id)?.proxy?.port, 9050)
+        await AsyncAssertEqual(await repository.proxies.count, 1)
+    }
+
+    func testDeletingAProxyMakesItsProfilesDirect() async throws {
+        let store = InMemoryProfileStore()
+        let repository = try await ProfileRepository(store: store)
+        let proxy = ProxyServer(host: "socks.example")
+        let other = ProxyServer(host: "other.example")
+        try await repository.upsertProxy(proxy)
+        try await repository.upsertProxy(other)
+        var first = profile("first")
+        first.proxyID = proxy.id
+        var second = profile("second")
+        second.proxyID = proxy.id
+        var third = profile("third")
+        third.proxyID = other.id
+        for item in [first, second, third] { try await repository.upsert(item) }
+        await AsyncAssertEqual(await repository.profileCount(usingProxy: proxy.id), 2)
+
+        try await repository.deleteProxy(id: proxy.id)
+        let reloaded = try await ProfileRepository(store: store)
+        await AsyncAssertEqual(await reloaded.proxies.map(\.id), [other.id])
+        await AsyncAssertEqual(await reloaded.profile(id: first.id)?.proxyID, nil)
+        await AsyncAssertEqual(await reloaded.profile(id: second.id)?.proxyID, nil)
+        await AsyncAssertEqual(await reloaded.profile(id: third.id)?.proxyID, other.id)
+        await AsyncAssertEqual(await reloaded.effectiveConfiguration(for: first.id)?.proxy, nil)
+    }
+
     func testWritesSurviveAReload() async throws {
         let store = InMemoryProfileStore()
         let repository = try await ProfileRepository(store: store)

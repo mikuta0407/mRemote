@@ -167,6 +167,19 @@ public enum RDPErrorMapper {
         }
     }
 
+    /// Through a proxy, FreeRDP reports the proxy's silence or refusal as the
+    /// connect failing, and the name it resolved is the proxy's: the
+    /// computer's never reached this device. So the network causes become
+    /// the proxy's.
+    public static func throughProxy(_ cause: RDPTerminationCause) -> RDPTerminationCause {
+        switch cause {
+        case .failed(.connectionRefused), .failed(.nameResolutionFailed), .failed(.networkUnreachable):
+            return .failed(.proxyUnreachable)
+        default:
+            return cause
+        }
+    }
+
     /// FreeRDP's `freerdp_get_last_error`. Zero means the backend failed
     /// without recording a reason, which is worth reporting as such rather
     /// than guessing at a category.

@@ -73,6 +73,9 @@ typedef struct mr_rdp_mock_connection_config {
     const char *gateway_password;
     const char *drive_path;
     const char *drive_name;
+    /* ABI 7. NULL for no proxy. */
+    const char *proxy_hostname;
+    uint16_t proxy_port;
 } mr_rdp_mock_connection_config;
 typedef void (*mr_rdp_mock_connection_observer)(
     void *context,

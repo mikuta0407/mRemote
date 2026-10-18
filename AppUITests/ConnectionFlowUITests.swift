@@ -146,6 +146,75 @@ final class ConnectionFlowUITests: XCTestCase {
         )
     }
 
+    private func shot(_ name: String) {
+        let screenshot = XCUIScreen.main.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        if let directory = ProcessInfo.processInfo.environment["MREMOTE_UITEST_SHOTS"] {
+            try? screenshot.pngRepresentation.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name).png"))
+        }
+    }
+
+    /// A proxy is saved once, from the editor, picked for the connection,
+    /// comes back with it, and the settings list says who uses it.
+    func testAProxyIsSavedOnceAndPickedPerConnection() {
+        element("add-profile-button").tap()
+        let host = assertAppears("profile-host-field", "the editor sheet opens")
+        element("profile-name-field").tap()
+        app.typeText("プロキシ越し")
+        host.tap()
+        app.typeText("desk.internal")
+
+        element("profile-manage-proxies").tap()
+        element("proxy-add").tap()
+        let proxyHost = assertAppears("proxy-host-field", "the proxy sheet opens")
+        element("proxy-name-field").tap()
+        app.typeText("社内プロキシ")
+        proxyHost.tap()
+        app.typeText("socks.example")
+        element("proxy-port-field").tap()
+        app.typeText("1081")
+        shot("proxy-1-editor")
+        element("proxy-save").tap()
+        _ = assertAppears("proxy-row", "the saved proxy is listed")
+        shot("proxy-2-list")
+        app.navigationBars.buttons.firstMatch.tap()
+
+        let picker = assertAppears("profile-proxy-picker", "back on the connection editor")
+        picker.tap()
+        let choice = app.buttons["社内プロキシ"].firstMatch
+        XCTAssertTrue(choice.waitForExistence(timeout: 5), "the saved proxy can be picked\n\(app.debugDescription)")
+        choice.tap()
+        shot("proxy-3-picked")
+        element("profile-save-button").tap()
+
+        let row = assertAppears("profile-row-プロキシ越し", "the connection is saved")
+        row.swipeLeft()
+        let edit = app.buttons["編集"].firstMatch
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        edit.tap()
+        let reopened = assertAppears("profile-proxy-picker", "the editor reopens")
+        XCTAssertTrue(
+            (reopened.value as? String)?.contains("社内プロキシ") == true
+                || app.staticTexts["社内プロキシ"].exists,
+            "the proxy comes back\n\(app.debugDescription)"
+        )
+        element("profile-cancel-button").tap()
+
+        element("settings-button").tap()
+        let link = element("settings-proxies")
+        for _ in 0..<8 where !(link.exists && link.isHittable) {
+            element("settings-screen").swipeUp()
+        }
+        link.tap()
+        _ = assertAppears("proxy-row", "the settings list shows the proxy")
+        XCTAssertTrue(app.staticTexts["1 件の接続先で使用中"].waitForExistence(timeout: 5),
+                      "the list says it is in use\n\(app.debugDescription)")
+        shot("proxy-4-settings")
+    }
+
     /// Groups head their connections, favourites come first, and the
     /// search narrows the list.
     func testGroupsFavouritesAndSearch() {

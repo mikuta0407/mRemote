@@ -161,6 +161,10 @@ enum Formatting {
             return String(localized: "メモリなどが足りず接続を始められませんでした。ほかのセッションを閉じてからもう一度試してください。")
         case .internalFailure(let detail):
             return String(localized: "アプリ内部のエラーです。もう一度接続してください。続く場合は、この詳細を添えて報告してください。（\(detail)）")
+        case .proxyUnreachable:
+            return String(localized: "プロキシ経由で接続できませんでした。プロキシのホスト名とポート、プロキシが動いているか、プロキシから接続先に届くかを確認してください。")
+        case .proxyRefused:
+            return String(localized: "プロキシが接続を中継しませんでした。SOCKS5 プロキシであること、ユーザー名とパスワードを求めない設定であること、プロキシの規則でこの接続先が許可されていることを確認してください。")
         }
     }
 }

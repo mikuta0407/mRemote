@@ -105,6 +105,9 @@ public struct ConnectionProfile: Identifiable, Hashable, Sendable, Codable {
     public var wakeOnLAN: WakeOnLANConfiguration?
     /// A heading the list groups the connection under; nil for none.
     public var group: String?
+    /// Schema v4. The saved proxy the connection goes through; nil for a
+    /// direct connection. Kept by a duplicate: it is not a secret.
+    public var proxyID: ProxyID?
     private var favorite: Bool?
 
     /// Listed first, under お気に入り.

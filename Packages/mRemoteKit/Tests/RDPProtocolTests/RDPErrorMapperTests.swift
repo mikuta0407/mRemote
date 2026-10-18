@@ -20,6 +20,13 @@ final class RDPErrorMapperTests: XCTestCase {
         )
     }
 
+    func testThroughAProxyTheNetworkFailuresAreTheProxys() {
+        XCTAssertEqual(RDPErrorMapper.throughProxy(.failed(.connectionRefused)), .failed(.proxyUnreachable))
+        XCTAssertEqual(RDPErrorMapper.throughProxy(.failed(.nameResolutionFailed)), .failed(.proxyUnreachable))
+        XCTAssertEqual(RDPErrorMapper.throughProxy(.failed(.authenticationFailed)), .failed(.authenticationFailed))
+        XCTAssertEqual(RDPErrorMapper.throughProxy(.stoppedLocally), .stoppedLocally)
+    }
+
     func testNameResolutionAndTransportAreDistinguished() {
         XCTAssertEqual(
             RDPErrorMapper.classify(status: .backend, nativeCode: connect(0x05)),

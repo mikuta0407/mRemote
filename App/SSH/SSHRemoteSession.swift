@@ -266,7 +266,8 @@ actor SSHRemoteSession: TerminalSession {
             terminalType: settings.terminalType,
             size: size,
             keepAliveSeconds: settings.keepAliveSeconds,
-            forwards: Array(settings.portForwards.prefix(Int(MR_SSH_MAX_FORWARDS)))
+            forwards: Array(settings.portForwards.prefix(Int(MR_SSH_MAX_FORWARDS))),
+            proxy: configuration.proxy.map { ($0.host, $0.port) }
         ))
     }
 

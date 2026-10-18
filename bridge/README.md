@@ -24,6 +24,7 @@ Phase 0 用の opaque-handle C ABI、host 上で FreeRDP なしに実行でき�
 - ABI 4 のタッチ（contact 0–255）とペンはキーと同じ bounded queue を通り、DOWN は対応する UP/CANCEL の空きを予約する。MOVE/HOVER は直前の同種だけをまとめる。`MR_RDP_CHANNEL_FLAG_TOUCH` なしの session では `UNSUPPORTED`。
 
 - ABI 6 の MACRDPX（`external/macrdpx`）は `MR_RDP_CHANNEL_FLAG_MACRDPX` と非 0 の `macrdpx_caps` が揃うときだけ静的チャンネルを要求し、接続時に client HELLO を送る。サーバーからは HELLO・STREAM_STATUS・INPUT_SOURCE だけを `on_macrdpx` に渡し（交渉済み caps 付き、文字列は callback 中だけ有効）、`mr_rdp_session_send_macrdpx` は client→server の型だけを mrx_encode で検証してキーと同じ有界・順序付きキューへ入れる。Mac のキー/ボタンの down は対応する up の空きを予約し、移動と同じ phase の継続スクロールはまとめる。サーバーの HELLO が来るまで、またはチャンネルが開かなければ送信は捨てる。
+- ABI 7 の SOCKS5 プロキシは `proxy_type` が `MR_RDP_PROXY_SOCKS5` のときだけ `proxy_hostname`（253 byte まで）と `proxy_port`（0 は 1080）を受け取り、FreeRDP の `ProxyType`/`ProxyHostname`/`ProxyPort` に渡す。コンピューターへの接続も RD ゲートウェイへの接続もプロキシ経由になり、接続先の名前はプロキシが解決する（SOCKS5 の domain address）。プロキシでのサインイン（RFC 1929）の欄は予約で、NULL/0 以外は拒否する。
 
 raw C pointer 自体は stale call を防げません。所有側（Swift の `NativeSessionCallGate`）は全 API 呼び出しと destroy 開始を外部で直列化し、呼び出し開始から内部の in-flight 登録までを destroy と競合させてはいけません。登録済みの run/callback/send は drain 対象です。
 

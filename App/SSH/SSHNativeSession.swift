@@ -77,6 +77,8 @@ struct SSHNativeConnection: Sendable {
     let size: TerminalSize
     let keepAliveSeconds: Int
     var forwards: [SSHPortForward] = []
+    /// A SOCKS5 proxy the connection goes through.
+    var proxy: (host: String, port: UInt16)?
 }
 
 /// Owns the C session: creates it, runs it on a thread of its own, and turns
@@ -127,6 +129,8 @@ final class SSHNativeSession: @unchecked Sendable {
             var forwards = zip(connection.forwards, hosts).map { forward, host in
                 mr_ssh_forward(local_port: forward.localPort, remote_host: UnsafePointer(host), remote_port: forward.remotePort)
             }
+            let proxyHost = connection.proxy.flatMap { strdup($0.host) }
+            defer { free(proxyHost) }
             let status = connection.host.withCString { host in
                 connection.username.withCString { user in
                     connection.terminalType.withCString { term in
@@ -141,6 +145,11 @@ final class SSHNativeSession: @unchecked Sendable {
                         config.pixel_width = UInt16(connection.size.pixelWidth)
                         config.pixel_height = UInt16(connection.size.pixelHeight)
                         config.keepalive_seconds = UInt32(max(0, connection.keepAliveSeconds))
+                        if let proxy = connection.proxy, let proxyHost {
+                            config.proxy_type = mr_ssh_proxy_type(MR_SSH_PROXY_SOCKS5)
+                            config.proxy_host = UnsafePointer(proxyHost)
+                            config.proxy_port = proxy.port
+                        }
                         var callbacks = mr_ssh_callbacks(
                             on_state: sshOnState,
                             on_host_key: sshOnHostKey,

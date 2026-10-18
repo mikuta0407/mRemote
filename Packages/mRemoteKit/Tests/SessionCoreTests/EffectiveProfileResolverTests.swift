@@ -131,6 +131,36 @@ final class SSHProfileResolverTests: XCTestCase {
         )
     }
 
+    private var desk: ConnectionProfile {
+        ConnectionProfile(displayName: "desk", endpoint: RemoteEndpoint(host: "desk.example", port: 3389))
+    }
+
+    func testTheProxyIsLookedUpForBothProtocols() {
+        let proxy = ProxyServer(host: "socks.example")
+        var desk = desk
+        desk.proxyID = proxy.id
+        var shell = profile(SSHConfiguration())
+        shell.proxyID = proxy.id
+        let resolver = EffectiveProfileResolver()
+        XCTAssertEqual(resolver.resolve(profile: desk, globalSettings: .default, proxies: [proxy]).proxy, proxy)
+        XCTAssertEqual(resolver.resolve(profile: shell, globalSettings: .default, proxies: [proxy]).proxy, proxy)
+        // None chosen, or one that is gone: a direct connection.
+        XCTAssertNil(resolver.resolve(profile: self.desk, globalSettings: .default, proxies: [proxy]).proxy)
+        XCTAssertNil(resolver.resolve(profile: desk, globalSettings: .default, proxies: []).proxy)
+    }
+
+    func testADuplicateKeepsTheProxy() {
+        var desk = desk
+        desk.proxyID = ProxyID()
+        XCTAssertEqual(desk.duplicated(displayName: "copy").proxyID, desk.proxyID)
+    }
+
+    func testAProxyIsShownByNameOrAddress() {
+        XCTAssertEqual(ProxyServer(name: " office ", host: "h").displayName, "office")
+        XCTAssertEqual(ProxyServer(host: "socks.example").displayName, "socks.example:1080")
+        XCTAssertEqual(ProxyServer(host: "::1", port: 9050).displayName, "[::1]:9050")
+    }
+
     func testTerminalSettingsInheritTheGlobalDefaults() {
         var settings = GlobalSettings()
         settings.terminal = TerminalDefaults(fontSize: 17, theme: .dark, optionAsMeta: false)

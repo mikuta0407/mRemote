@@ -24,7 +24,8 @@ final class RDPRemoteSessionTests: XCTestCase {
     private func makeSession(
         endpoint: RemoteEndpoint,
         username: String? = "tester",
-        password: String? = "secret"
+        password: String? = "secret",
+        proxy: ProxyServer? = nil
     ) async throws -> RDPRemoteSession {
         let credentials = InMemoryCredentialRepository()
         var account = RemoteAccount(username: username)
@@ -46,7 +47,8 @@ final class RDPRemoteSessionTests: XCTestCase {
             clipboardPolicy: .disabled,
             scrollDirection: .normal,
             reconnectPolicy: .disabled,
-            securityPolicy: .secureAutomatic
+            securityPolicy: .secureAutomatic,
+            proxy: proxy
         )
         return RDPRemoteSession(
             configuration: configuration,
@@ -93,6 +95,57 @@ final class RDPRemoteSessionTests: XCTestCase {
                 XCTFail("an unmapped bridge status reached the UI: \(detail)")
             }
         }
+    }
+
+    /// Nothing listens where the proxy should be: the error names the proxy,
+    /// not the computer behind it.
+    func testAProxyThatIsNotThereIsReportedAsTheProxys() async throws {
+        let session = try await makeSession(
+            endpoint: RemoteEndpoint(host: "desk.example", port: 3389),
+            proxy: ProxyServer(host: "127.0.0.1", port: 1))
+        let errors = ErrorRecorder()
+        let stream = await session.controlEvents()
+        let observer = Task {
+            for await event in stream {
+                if case .error(let error) = event { errors.append(error) }
+            }
+        }
+        defer { observer.cancel() }
+
+        try await session.connect()
+        let state = await waitForState(session) { $0 == .failed || $0 == .disconnected }
+        XCTAssertEqual(state, .failed)
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(errors.values, [.proxyUnreachable])
+    }
+
+    /// The whole RDP stack through a real SOCKS5 proxy to a real server.
+    /// Skipped unless TEST_RUNNER_MREMOTE_RDP_PROXY_PORT (on 127.0.0.1),
+    /// _HOST (as the proxy resolves it), _USER and _PASSWORD are given.
+    func testAProxyCarriesARealConnection() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let portText = environment["MREMOTE_RDP_PROXY_PORT"], let proxyPort = UInt16(portText),
+              let host = environment["MREMOTE_RDP_PROXY_HOST"],
+              let user = environment["MREMOTE_RDP_PROXY_USER"],
+              let password = environment["MREMOTE_RDP_PROXY_PASSWORD"] else {
+            throw XCTSkip("no proxy and server given")
+        }
+        let session = try await makeSession(
+            endpoint: RemoteEndpoint(host: host, port: 3389), username: user, password: password,
+            proxy: ProxyServer(host: "127.0.0.1", port: proxyPort))
+        try await session.connect()
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            let state = await session.state
+            if state == .connected || state == .failed || state == .disconnected { break }
+            if let pending = await session.pendingChallenge, case .certificate = pending {
+                try await session.respond(to: pending.id, with: .trustOnce)
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let state = await session.state
+        XCTAssertEqual(state, .connected)
+        await session.disconnect(reason: .userRequested)
     }
 
     func testAFailedSessionCanBeDisconnectedAndReachesATerminalState() async throws {

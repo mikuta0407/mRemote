@@ -222,14 +222,41 @@ static void harness_start_with(harness *h, plan_kind plan, const char *key, uint
     harness_start_to(h, plan, key, "127.0.0.1", port, 5000, forwards, forward_count);
 }
 
-static void harness_start_to(harness *h, plan_kind plan, const char *key, const char *host,
-                             uint16_t port, uint32_t connect_timeout_ms,
-                             const mr_ssh_forward *forwards, size_t forward_count) {
+static void harness_start_config(harness *h, plan_kind plan, const char *key, const mr_ssh_config *config) {
     memset(h, 0, sizeof *h);
     pthread_mutex_init(&h->lock, NULL);
     pthread_cond_init(&h->cond, NULL);
     h->plan = plan;
     h->key_name = key;
+    mr_ssh_callbacks callbacks = {
+        .on_state = on_state,
+        .on_host_key = on_host_key,
+        .on_auth_request = on_auth_request,
+        .on_output = on_output,
+        .on_forward = on_forward,
+    };
+    mr_ssh_status status = mr_ssh_session_create(config, &callbacks, h, &h->session);
+    CHECK(status == MR_SSH_STATUS_OK, "create=%d", status);
+}
+
+static mr_ssh_config test_config(const char *host, uint16_t port, uint32_t connect_timeout_ms) {
+    mr_ssh_config config = {
+        .struct_size = sizeof config,
+        .host = host,
+        .port = port,
+        .username = g_user,
+        .term = "xterm-256color",
+        .columns = 80,
+        .rows = 24,
+        .keepalive_seconds = 5,
+        .connect_timeout_ms = connect_timeout_ms,
+    };
+    return config;
+}
+
+static void harness_start_to(harness *h, plan_kind plan, const char *key, const char *host,
+                             uint16_t port, uint32_t connect_timeout_ms,
+                             const mr_ssh_forward *forwards, size_t forward_count) {
     mr_ssh_config config = {
         .struct_size = sizeof config,
         .host = host,
@@ -243,15 +270,7 @@ static void harness_start_to(harness *h, plan_kind plan, const char *key, const 
         .forwards = forwards,
         .forward_count = forward_count,
     };
-    mr_ssh_callbacks callbacks = {
-        .on_state = on_state,
-        .on_host_key = on_host_key,
-        .on_auth_request = on_auth_request,
-        .on_output = on_output,
-        .on_forward = on_forward,
-    };
-    mr_ssh_status status = mr_ssh_session_create(&config, &callbacks, h, &h->session);
-    CHECK(status == MR_SSH_STATUS_OK, "create=%d", status);
+    harness_start_config(h, plan, key, &config);
 }
 
 static double monotonic_seconds(void) {
@@ -1035,6 +1054,233 @@ static void test_a_stop_during_a_stalled_paste_is_prompt(void) {
     relay_stop(&r);
 }
 
+/* A SOCKS5 proxy for one connection (RFC 1928), playing whatever part a test
+ * needs. CONNECT goes to the sshd's port on loopback, whatever the request
+ * names: the test checks the name instead. */
+typedef enum {
+    PROXY_CARRY,         /* answers and relays */
+    PROXY_WANTS_SIGN_IN, /* accepts no offered method (0xFF) */
+    PROXY_REPLIES,       /* refuses the CONNECT with `reply` */
+    PROXY_SILENT         /* accepts the connection and says nothing */
+} proxy_mode;
+
+typedef struct {
+    int listener;
+    uint16_t port;
+    proxy_mode mode;
+    uint8_t reply;
+    int client, server;
+    /* What the request asked for. */
+    uint8_t address_type;
+    char name[256];
+    uint16_t target_port;
+    pthread_t thread;
+} socks_proxy;
+
+static int read_exactly(int fd, uint8_t *bytes, size_t length) {
+    size_t done = 0;
+    while (done < length) {
+        ssize_t n = read(fd, bytes + done, length - done);
+        if (n <= 0) return -1;
+        done += (size_t)n;
+    }
+    return 0;
+}
+
+static void *proxy_down(void *argument) {
+    socks_proxy *p = argument;
+    char buffer[16384];
+    ssize_t n;
+    while ((n = read(p->server, buffer, sizeof buffer)) > 0) {
+        if (write(p->client, buffer, (size_t)n) != n) break;
+    }
+    shutdown(p->client, SHUT_WR);
+    return NULL;
+}
+
+static void *proxy_thread(void *argument) {
+    socks_proxy *p = argument;
+    p->client = accept(p->listener, NULL, NULL);
+    if (p->client < 0) return NULL;
+    struct timeval timeout = { .tv_sec = 15 };
+    setsockopt(p->client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+    uint8_t buffer[512];
+    if (p->mode == PROXY_SILENT) {
+        /* Until the bridge gives up and closes. */
+        while (read(p->client, buffer, sizeof buffer) > 0) {}
+        return NULL;
+    }
+    if (read_exactly(p->client, buffer, 2) != 0 || buffer[0] != 5 ||
+        read_exactly(p->client, buffer + 2, buffer[1]) != 0) {
+        return NULL;
+    }
+    uint8_t choice[2] = { 5, p->mode == PROXY_WANTS_SIGN_IN ? 0xFF : 0 };
+    if (write(p->client, choice, 2) != 2 || p->mode == PROXY_WANTS_SIGN_IN) return NULL;
+    if (read_exactly(p->client, buffer, 4) != 0) return NULL;
+    p->address_type = buffer[3];
+    size_t length = buffer[3] == 1 ? 4 : buffer[3] == 4 ? 16 : 0;
+    if (buffer[3] == 3) {
+        if (read_exactly(p->client, buffer, 1) != 0) return NULL;
+        length = buffer[0];
+    }
+    if (read_exactly(p->client, buffer, length + 2) != 0) return NULL;
+    if (p->address_type == 3) {
+        memcpy(p->name, buffer, length);
+        p->name[length] = '\0';
+    } else {
+        inet_ntop(p->address_type == 1 ? AF_INET : AF_INET6, buffer, p->name, sizeof p->name);
+    }
+    p->target_port = (uint16_t)(buffer[length] << 8 | buffer[length + 1]);
+    /* A domain-name bound address, so the bridge must read a length too. */
+    uint8_t reply[] = { 5, p->mode == PROXY_REPLIES ? p->reply : 0, 0, 3, 4, 'p', 'r', 'x', 'y', 0x12, 0x34 };
+    if (p->mode == PROXY_REPLIES) {
+        if (write(p->client, reply, sizeof reply) != (ssize_t)sizeof reply) {}
+        return NULL;
+    }
+    p->server = connect_loopback(g_port);
+    if (p->server < 0) return NULL;
+    struct timeval none = { 0 };
+    setsockopt(p->server, SOL_SOCKET, SO_RCVTIMEO, &none, sizeof none);
+    setsockopt(p->client, SOL_SOCKET, SO_RCVTIMEO, &none, sizeof none);
+    if (write(p->client, reply, sizeof reply) != (ssize_t)sizeof reply) return NULL;
+    pthread_t down;
+    pthread_create(&down, NULL, proxy_down, p);
+    ssize_t n;
+    while ((n = read(p->client, buffer, sizeof buffer)) > 0) {
+        if (write(p->server, buffer, (size_t)n) != n) break;
+    }
+    shutdown(p->server, SHUT_WR);
+    pthread_join(down, NULL);
+    return NULL;
+}
+
+static void proxy_start(socks_proxy *p, proxy_mode mode, uint8_t reply) {
+    memset(p, 0, sizeof *p);
+    p->mode = mode;
+    p->reply = reply;
+    p->client = p->server = -1;
+    p->listener = listen_loopback(0);
+    p->port = bound_port(p->listener);
+    pthread_create(&p->thread, NULL, proxy_thread, p);
+}
+
+static void proxy_stop(socks_proxy *p) {
+    if (p->client < 0) shutdown(p->listener, SHUT_RDWR);
+    pthread_join(p->thread, NULL);
+    if (p->client >= 0) close(p->client);
+    if (p->server >= 0) close(p->server);
+    close(p->listener);
+}
+
+/* Runs one session to host through the proxy on proxy_port; returns once it
+ * has ended, or after running a command when `command_runs`. */
+static void run_through_proxy(harness *h, const char *host, uint16_t proxy_port, uint32_t timeout_ms,
+                              int command_runs) {
+    mr_ssh_config config = test_config(host, 2222, timeout_ms);
+    config.proxy_type = MR_SSH_PROXY_SOCKS5;
+    config.proxy_host = "127.0.0.1";
+    config.proxy_port = proxy_port;
+    harness_start_config(h, PLAN_KEY, "user_ed25519", &config);
+    pthread_t thread;
+    pthread_create(&thread, NULL, run_thread, h);
+    if (command_runs) {
+        write_text(h, "echo via-proxy-$((6*7))\n");
+        CHECK(wait_for(h, "via-proxy-42", 15), "no output through the proxy; state=%u failure=%u detail=%d",
+              h->last_state, h->failure, h->detail);
+        CHECK(h->connected, "never connected");
+        write_text(h, "exit\n");
+    }
+    CHECK(wait_for(h, NULL, 15), "did not end");
+    harness_finish(h, thread);
+}
+
+static void test_a_proxy_carries_the_connection(void) {
+    printf("through a SOCKS5 proxy\n");
+    socks_proxy p;
+    harness h;
+    proxy_start(&p, PROXY_CARRY, 0);
+    run_through_proxy(&h, "localhost", p.port, 5000, 1);
+    proxy_stop(&p);
+    CHECK(h.last_state == MR_SSH_STATE_CLOSED, "state %u failure %u", h.last_state, h.failure);
+    /* The name went to the proxy unresolved, with the server's port. */
+    CHECK(p.address_type == 3 && strcmp(p.name, "localhost") == 0, "asked for type %u %s", p.address_type, p.name);
+    CHECK(p.target_port == 2222, "port %u", p.target_port);
+
+    proxy_start(&p, PROXY_CARRY, 0);
+    run_through_proxy(&h, "127.0.0.1", p.port, 5000, 1);
+    proxy_stop(&p);
+    CHECK(p.address_type == 1 && strcmp(p.name, "127.0.0.1") == 0, "asked for type %u %s", p.address_type, p.name);
+
+    proxy_start(&p, PROXY_CARRY, 0);
+    run_through_proxy(&h, "::1", p.port, 5000, 1);
+    proxy_stop(&p);
+    CHECK(p.address_type == 4 && strcmp(p.name, "::1") == 0, "asked for type %u %s", p.address_type, p.name);
+}
+
+static void test_proxy_failures_are_reported(void) {
+    printf("SOCKS5 proxy failures\n");
+    socks_proxy p;
+    harness h;
+
+    proxy_start(&p, PROXY_WANTS_SIGN_IN, 0);
+    run_through_proxy(&h, "localhost", p.port, 5000, 0);
+    proxy_stop(&p);
+    CHECK(h.last_state == MR_SSH_STATE_FAILED, "state %u", h.last_state);
+    CHECK(h.failure == MR_SSH_FAILURE_PROXY && h.detail == 0xFF, "failure %u detail %d", h.failure, h.detail);
+
+    proxy_start(&p, PROXY_REPLIES, 2); /* not allowed by its rules */
+    run_through_proxy(&h, "localhost", p.port, 5000, 0);
+    proxy_stop(&p);
+    CHECK(h.failure == MR_SSH_FAILURE_PROXY && h.detail == 2, "failure %u detail %d", h.failure, h.detail);
+
+    proxy_start(&p, PROXY_REPLIES, 5); /* the server refused */
+    run_through_proxy(&h, "localhost", p.port, 5000, 0);
+    proxy_stop(&p);
+    CHECK(h.failure == MR_SSH_FAILURE_REFUSED && h.detail == 5, "failure %u detail %d", h.failure, h.detail);
+
+    proxy_start(&p, PROXY_REPLIES, 4); /* host unreachable */
+    run_through_proxy(&h, "localhost", p.port, 5000, 0);
+    proxy_stop(&p);
+    CHECK(h.failure == MR_SSH_FAILURE_UNREACHABLE && h.detail == 4, "failure %u detail %d", h.failure, h.detail);
+
+    /* Nobody listening there. */
+    uint16_t closed = free_port();
+    run_through_proxy(&h, "localhost", closed, 5000, 0);
+    CHECK(h.failure == MR_SSH_FAILURE_PROXY_UNREACHABLE && h.detail == ECONNREFUSED,
+          "failure %u detail %d", h.failure, h.detail);
+
+    double start = monotonic_seconds();
+    proxy_start(&p, PROXY_SILENT, 0);
+    run_through_proxy(&h, "localhost", p.port, 500, 0);
+    proxy_stop(&p);
+    double elapsed = monotonic_seconds() - start;
+    CHECK(h.failure == MR_SSH_FAILURE_TIMEOUT, "failure %u detail %d", h.failure, h.detail);
+    CHECK(elapsed < 2.0, "a silent proxy took %.2f s", elapsed);
+}
+
+static void test_a_stop_while_the_proxy_is_silent_is_prompt(void) {
+    printf("stop while a SOCKS5 proxy says nothing\n");
+    socks_proxy p;
+    proxy_start(&p, PROXY_SILENT, 0);
+    mr_ssh_config config = test_config("localhost", 22, 30000);
+    config.proxy_type = MR_SSH_PROXY_SOCKS5;
+    config.proxy_host = "127.0.0.1";
+    config.proxy_port = p.port;
+    harness h;
+    harness_start_config(&h, PLAN_KEY, "user_ed25519", &config);
+    pthread_t thread;
+    pthread_create(&thread, NULL, run_thread, &h);
+    usleep(300 * 1000);
+    double start = monotonic_seconds();
+    mr_ssh_session_request_stop(h.session);
+    harness_finish(&h, thread);
+    double elapsed = monotonic_seconds() - start;
+    CHECK(elapsed < 1.0, "run returned %.2f s after the stop", elapsed);
+    CHECK(h.last_state == MR_SSH_STATE_CLOSED && h.failure == MR_SSH_FAILURE_CANCELLED,
+          "state %u failure %u", h.last_state, h.failure);
+    proxy_stop(&p);
+}
+
 static void test_invalid_arguments_are_refused(void) {
     printf("argument checks\n");
     mr_ssh_session *session = NULL;
@@ -1052,6 +1298,29 @@ static void test_invalid_arguments_are_refused(void) {
     mr_ssh_callbacks missing = callbacks;
     missing.on_output = NULL;
     CHECK(mr_ssh_session_create(&config, &missing, NULL, &session) == MR_SSH_ERROR_INVALID_ARGUMENT, "callbacks");
+    mr_ssh_config proxied = config;
+    proxied.proxy_type = MR_SSH_PROXY_SOCKS5;
+    proxied.proxy_host = "proxy";
+    mr_ssh_config bad = proxied;
+    bad.proxy_host = NULL;
+    CHECK(mr_ssh_session_create(&bad, &callbacks, NULL, &session) == MR_SSH_ERROR_INVALID_ARGUMENT, "no proxy host");
+    bad = proxied;
+    bad.proxy_username = "u";
+    CHECK(mr_ssh_session_create(&bad, &callbacks, NULL, &session) == MR_SSH_ERROR_INVALID_ARGUMENT, "proxy sign-in");
+    bad = proxied;
+    bad.proxy_type = 2;
+    CHECK(mr_ssh_session_create(&bad, &callbacks, NULL, &session) == MR_SSH_ERROR_INVALID_ARGUMENT, "proxy type");
+    bad = config;
+    bad.proxy_host = "proxy";
+    CHECK(mr_ssh_session_create(&bad, &callbacks, NULL, &session) == MR_SSH_ERROR_INVALID_ARGUMENT, "host, no type");
+    char long_host[300];
+    memset(long_host, 'a', sizeof long_host - 1);
+    long_host[sizeof long_host - 1] = '\0';
+    bad = proxied;
+    bad.host = long_host;
+    CHECK(mr_ssh_session_create(&bad, &callbacks, NULL, &session) == MR_SSH_ERROR_INVALID_ARGUMENT, "256+ byte host");
+    CHECK(mr_ssh_session_create(&proxied, &callbacks, NULL, &session) == MR_SSH_STATUS_OK, "valid proxied");
+    CHECK(mr_ssh_session_destroy(session) == MR_SSH_STATUS_OK, "destroy proxied");
 
     CHECK(mr_ssh_session_create(&config, &callbacks, NULL, &session) == MR_SSH_STATUS_OK, "valid");
     CHECK(mr_ssh_session_answer_host_key(session, 1, MR_SSH_HOST_KEY_ACCEPT) == MR_SSH_ERROR_STALE_CHALLENGE, "stale");
@@ -1103,6 +1372,9 @@ int main(void) {
     test_connections_past_the_limit_wait_their_turn();
     test_a_forward_works_while_output_is_paused();
     test_a_stop_during_a_stalled_paste_is_prompt();
+    test_a_proxy_carries_the_connection();
+    test_proxy_failures_are_reported();
+    test_a_stop_while_the_proxy_is_silent_is_prompt();
 
     if (g_failures) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);

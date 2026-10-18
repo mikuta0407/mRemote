@@ -29,8 +29,8 @@
 extern "C" {
 #endif
 
-/* ABI 2: local port forwards. */
-#define MR_SSH_BRIDGE_ABI_VERSION 2u
+/* ABI 2: local port forwards. ABI 3: a SOCKS5 proxy. */
+#define MR_SSH_BRIDGE_ABI_VERSION 3u
 #define MR_SSH_DEFAULT_PORT 22u
 #define MR_SSH_MAX_HOST_BYTES 1024u
 #define MR_SSH_MAX_USERNAME_BYTES 1024u
@@ -52,6 +52,9 @@ extern "C" {
 #define MR_SSH_MAX_FORWARDS 16u
 /* Connections through all forwards at once; more wait in the listen queue. */
 #define MR_SSH_MAX_TUNNELS 64u
+/* ABI 3. A SOCKS5 domain name is at most 255 bytes (RFC 1928): through a
+ * proxy, host is too. */
+#define MR_SSH_MAX_PROXY_HOST_BYTES 255u
 
 typedef struct mr_ssh_session mr_ssh_session;
 typedef int32_t mr_ssh_status;
@@ -99,7 +102,18 @@ enum {
     /* The connection dropped after it was established. */
     MR_SSH_FAILURE_DISCONNECTED = 10,
     MR_SSH_FAILURE_CANCELLED = 11,
-    MR_SSH_FAILURE_INTERNAL = 12
+    MR_SSH_FAILURE_INTERNAL = 12,
+    /* ABI 3. The proxy could not be reached: its name did not resolve, or it
+     * refused or did not answer the connection. detail is the errno (or the
+     * getaddrinfo error). */
+    MR_SSH_FAILURE_PROXY_UNREACHABLE = 13,
+    /* ABI 3. The proxy answered but would not carry the connection: it wants
+     * a sign-in, refused by its rules, or spoke something else than SOCKS5.
+     * detail is the SOCKS reply code, 0xFF for no acceptable sign-in method,
+     * or -1 for a malformed reply. A proxy that reports the destination
+     * unreachable, refused or timed out gives UNREACHABLE, REFUSED or TIMEOUT
+     * instead, with the reply code as detail. */
+    MR_SSH_FAILURE_PROXY = 14
 };
 
 /* Sign-in methods, as a bit set. */
@@ -108,6 +122,14 @@ enum {
     MR_SSH_AUTH_PUBLICKEY = 1u << 0,
     MR_SSH_AUTH_KEYBOARD_INTERACTIVE = 1u << 1,
     MR_SSH_AUTH_PASSWORD = 1u << 2
+};
+
+/* ABI 3. */
+typedef uint32_t mr_ssh_proxy_type;
+enum {
+    MR_SSH_PROXY_NONE = 0,
+    /* RFC 1928, CONNECT, without a sign-in. */
+    MR_SSH_PROXY_SOCKS5 = 1
 };
 
 /* ABI 2: `ssh -L local_port:remote_host:remote_port`. The listener is on
@@ -139,6 +161,17 @@ typedef struct {
     /* ABI 2. Copied during create; NULL/0 for none. */
     const mr_ssh_forward *forwards;
     size_t forward_count;
+    /* ABI 3. The connection goes through this proxy, which resolves host
+     * itself: the device never looks the name up. proxy_host is a name or an
+     * IP literal without brackets, NULL with MR_SSH_PROXY_NONE; port 0 is
+     * 1080. The lookup and connect to the proxy and its handshake share
+     * connect_timeout_ms. */
+    mr_ssh_proxy_type proxy_type;
+    const char *proxy_host;
+    uint16_t proxy_port;
+    /* Reserved for a sign-in at the proxy (RFC 1929); must be NULL. */
+    const char *proxy_username;
+    const char *proxy_password;
 } mr_ssh_config;
 
 typedef uint32_t mr_ssh_host_key_type;

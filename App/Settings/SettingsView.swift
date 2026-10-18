@@ -118,6 +118,15 @@ struct SettingsView: View {
                     Text("SSH の接続先が「全体設定に従う」ときに使う値です。")
                 }
 
+                Section {
+                    NavigationLink("プロキシ") { ProxiesView() }
+                        .accessibilityIdentifier("settings-proxies")
+                } header: {
+                    Text("接続")
+                } footer: {
+                    Text("接続先の設定で選べる SOCKS5 プロキシです。")
+                }
+
                 Section("診断") {
                     NavigationLink("入力診断") {
                         InputDiagnosticsView()

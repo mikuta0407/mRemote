@@ -5382,6 +5382,186 @@
           }
         }
       }
+    },
+    "プロキシはまだありません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No proxies yet."
+          }
+        }
+      }
+    },
+    "%lld 件の接続先で使用中": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used by %lld connections"
+          }
+        }
+      }
+    },
+    "プロキシ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proxy"
+          }
+        }
+      }
+    },
+    "プロキシを削除しますか？": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete the proxy?"
+          }
+        }
+      }
+    },
+    "%lld 件の接続先がこのプロキシを使っています。削除すると、それらはプロキシを使わずに直接接続します。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld connections use this proxy. Once it is deleted, they connect directly."
+          }
+        }
+      }
+    },
+    "どの接続先も使っていません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No connection uses it."
+          }
+        }
+      }
+    },
+    "名前（任意）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name (Optional)"
+          }
+        }
+      }
+    },
+    "ホスト": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Host"
+          }
+        }
+      }
+    },
+    "接続先の名前はプロキシが解決します。プロキシの先でしか引けない名前でも接続できます。ユーザー名とパスワードが必要なプロキシにはまだ対応していません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The proxy resolves the computer's name, so a name known only beyond the proxy works. Proxies that ask for a user name and password are not supported yet."
+          }
+        }
+      }
+    },
+    "プロキシを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Proxy"
+          }
+        }
+      }
+    },
+    "プロキシを編集": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Proxy"
+          }
+        }
+      }
+    },
+    "プロキシを管理…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manage Proxies…"
+          }
+        }
+      }
+    },
+    "SOCKS5 プロキシを経由して接続します。接続先の名前はプロキシが解決します。保存したプロキシはほかの接続先からも選べます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connects through a SOCKS5 proxy, which resolves the computer's name. A saved proxy can be picked for other connections too."
+          }
+        }
+      }
+    },
+    "接続先の設定で選べる SOCKS5 プロキシです。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SOCKS5 proxies that connections can go through."
+          }
+        }
+      }
+    },
+    "プロキシを保存できませんでした（%@）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The proxy couldn't be saved (%@)."
+          }
+        }
+      }
+    },
+    "プロキシを削除できませんでした（%@）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The proxy couldn't be deleted (%@)."
+          }
+        }
+      }
+    },
+    "プロキシ経由で接続できませんでした。プロキシのホスト名とポート、プロキシが動いているか、プロキシから接続先に届くかを確認してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection through the proxy failed. Check the proxy's host name and port, that the proxy is running, and that it can reach the computer."
+          }
+        }
+      }
+    },
+    "プロキシが接続を中継しませんでした。SOCKS5 プロキシであること、ユーザー名とパスワードを求めない設定であること、プロキシの規則でこの接続先が許可されていることを確認してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The proxy wouldn't carry the connection. Check that it is a SOCKS5 proxy, that it doesn't ask for a user name and password, and that its rules allow this computer."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
