@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import AppleAdapters
 import InputCore
 import Persistence
@@ -17,6 +18,14 @@ enum UITestConfiguration {
     static var isActive: Bool {
         ProcessInfo.processInfo.arguments.contains(launchArgument)
     }
+
+    /// Asks for UIKit's own transitions to run without animation. Now and
+    /// then one of the many layer animations of a sheet sliding in never
+    /// reports its end (iOS 27.1, seen on the iPhone Duo), and XCTest then
+    /// waits a minute per step for the app to come to rest. Opt-in: with
+    /// animations off, SwiftUI is late to report where the floating buttons
+    /// went when the keyboard comes up, which the keyboard tests rely on.
+    static let withoutAnimationsArgument = "-mremote-ui-testing-without-animations"
 
     /// Device settings a test changes through the UI, cleared on launch so
     /// one test's choice is not the next one's starting point.
@@ -43,6 +52,9 @@ enum UITestConfiguration {
 
     @MainActor
     static func makeEnvironment() -> AppEnvironment {
+        if ProcessInfo.processInfo.arguments.contains(withoutAnimationsArgument) {
+            UIView.setAnimationsEnabled(false)
+        }
         for key in resetDefaultsKeys {
             UserDefaults.standard.removeObject(forKey: key)
         }

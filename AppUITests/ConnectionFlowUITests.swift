@@ -9,7 +9,9 @@ final class ConnectionFlowUITests: XCTestCase {
     override func setUp() {
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchArguments = ["-mremote-ui-testing"]
+        // The editor sheets here are where the app was seen to stall
+        // (UITestConfiguration.withoutAnimationsArgument).
+        app.launchArguments = ["-mremote-ui-testing", "-mremote-ui-testing-without-animations"]
         app.launch()
     }
 
@@ -37,9 +39,51 @@ final class ConnectionFlowUITests: XCTestCase {
         let origin = app.coordinate(withNormalizedOffset: .zero)
         let x = cancel.frame.minX + 2
         let top = cancel.frame.maxY
-        for _ in 0..<15 where !(target.exists && target.isHittable) {
-            origin.withOffset(CGVector(dx: x, dy: top + 220))
-                .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: x, dy: top + 80)))
+        // The bar stays put over the form (keepsNavigationBarOnScroll), so a
+        // row just under it reads as hittable while a tap there lands on the
+        // bar: it has to be clear of it, and a row carried past comes back.
+        // Likewise at the foot: the bar of suggestions over the keyboard
+        // lives in a window of its own and doesn't count against hittable.
+        let assistant = app.otherElements["SystemInputAssistantView"].firstMatch
+        let keyboard = app.keyboards.element
+        func bottom() -> CGFloat {
+            if assistant.exists { return assistant.frame.minY }
+            if keyboard.exists { return keyboard.frame.minY }
+            return app.frame.maxY
+        }
+        for _ in 0..<15 {
+            let clear = target.exists && target.isHittable && target.frame.minY >= top + 8
+                && target.frame.maxY <= bottom()
+            if clear { break }
+            if target.exists && target.frame.minY < top + 8 {
+                origin.withOffset(CGVector(dx: x, dy: top + 80))
+                    .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: x, dy: top + 160)))
+            } else {
+                origin.withOffset(CGVector(dx: x, dy: top + 220))
+                    .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: x, dy: top + 80)))
+            }
+        }
+        // A tap while the form still glides only stops it: wait for it to
+        // come to rest.
+        var last = target.exists ? target.frame : .zero
+        for _ in 0..<10 {
+            Thread.sleep(forTimeInterval: 0.3)
+            let now = target.exists ? target.frame : .zero
+            if now == last { break }
+            last = now
+        }
+    }
+
+    /// Back from the screen titled `title`. Its own bar's first button: on
+    /// an iPad the list behind a sheet has a navigation bar too. On a wide
+    /// iPhone (the iPhone Duo open) the back button moves to the side bar
+    /// and the bar's first button is whatever else it carries.
+    private func goBack(from title: String) {
+        let back = app.buttons["BackButton"].firstMatch
+        if back.exists {
+            back.tap()
+        } else {
+            app.navigationBars[title].buttons.element(boundBy: 0).tap()
         }
     }
 
@@ -127,6 +171,10 @@ final class ConnectionFlowUITests: XCTestCase {
         let gatewayHost = assertAppears("profile-gateway-host-field", "the gateway's fields appear")
         gatewayHost.tap()
         app.typeText("gw.example.com")
+        // Put the keyboard away: while the field holds the focus, the form
+        // may scroll back to it as the folder menu opens, and the menu goes.
+        app.typeText("\n")
+        XCTAssertTrue(app.keyboards.element.waitForNonExistence(timeout: 5))
 
         let folder = element("profile-shared-folder-picker")
         scrollEditor(to: folder)
@@ -195,15 +243,7 @@ final class ConnectionFlowUITests: XCTestCase {
         if save.waitForExistence(timeout: 2), save.isHittable { save.tap() }
         _ = assertAppears("proxy-row", "the saved proxy is listed")
         shot("proxy-2-list")
-        // The list's own back button: on iPad the list behind the sheet
-        // has a navigation bar too, and on a wide iPhone the bar's buttons
-        // move to a side toolbar.
-        let back = app.buttons["BackButton"].firstMatch
-        if back.exists {
-            back.tap()
-        } else {
-            app.navigationBars["プロキシ"].buttons.element(boundBy: 0).tap()
-        }
+        goBack(from: "プロキシ")
 
         let picker = assertAppears("profile-proxy-picker", "back on the connection editor")
         picker.tap()
@@ -260,8 +300,11 @@ final class ConnectionFlowUITests: XCTestCase {
         favourite.tap()
         XCTAssertTrue(app.staticTexts["お気に入り"].waitForExistence(timeout: 5), "favourites get their own section")
 
+        // On a wide iPhone the search sits behind a button in the side bar.
         let search = app.searchFields.firstMatch
-        if !search.exists { app.swipeDown() }
+        let searchButton = app.buttons["検索"].firstMatch
+        if !search.exists, searchButton.exists { searchButton.tap() }
+        if !search.waitForExistence(timeout: 2) { app.swipeDown() }
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()
         app.typeText("nas")
@@ -399,8 +442,7 @@ final class ConnectionFlowUITests: XCTestCase {
         let suggestion = assertAppears("shortcut-suggestion-Win+D", "the editor offers common shortcuts")
         suggestion.tap()
         _ = assertAppears("shortcut-row-Win+D", "a suggestion joins the list")
-        // The editor's own bar: on an iPad the sheet's bar comes first.
-        app.navigationBars["ショートカット"].buttons.element(boundBy: 0).tap()
+        goBack(from: "ショートカット")
         _ = assertAppears("session-menu-close", "back in the menu")
         element("session-menu-close").tap()
 

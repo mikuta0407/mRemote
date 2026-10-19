@@ -10,7 +10,9 @@ final class AccessibilityAuditUITests: XCTestCase {
     override func setUp() {
         continueAfterFailure = true
         app = XCUIApplication()
-        app.launchArguments = ["-mremote-ui-testing"]
+        // It opens sheet after sheet, where the app was seen to stall
+        // (UITestConfiguration.withoutAnimationsArgument).
+        app.launchArguments = ["-mremote-ui-testing", "-mremote-ui-testing-without-animations"]
         app.launch()
     }
 
@@ -19,7 +21,8 @@ final class AccessibilityAuditUITests: XCTestCase {
     }
 
     /// Issues that are accepted on purpose, by the element identifier they
-    /// are found on and the audit type.
+    /// are found on (a trailing `*` matches any identifier starting with the
+    /// rest) and the audit type.
     private static let knownIssues: [(identifier: String, type: XCUIAccessibilityAuditType)] = [
         // The remote desktop is a picture of another computer: its contrast
         // and text are the remote's, not ours to fix.
@@ -32,6 +35,11 @@ final class AccessibilityAuditUITests: XCTestCase {
         // key, which is a fixed share of the deck as on a real keyboard;
         // VoiceOver reads each key by name instead.
         ("laptop-key-cap", .dynamicType),
+        // A full PC keyboard, function row included, across a phone held
+        // as a laptop: on the iPhone Duo its keys come out smaller than the
+        // audit's minimum. Fewer, bigger keys would no longer be a PC
+        // keyboard; the iOS keyboard, with its own key size, is one tap away.
+        ("laptop-key-*", .hitRegion),
         // Plain Text in a List, which follows the text setting. The audit
         // grows text where it stands, so rows it pushes below the screen
         // come back as "partially unsupported", which rows depending on
@@ -52,7 +60,12 @@ final class AccessibilityAuditUITests: XCTestCase {
             try app.performAccessibilityAudit { issue in
                 let identifier = issue.element?.identifier ?? ""
                 let label = issue.element?.label ?? ""
-                let isKnown = known.contains { $0.identifier == identifier && $0.type == issue.auditType }
+                let isKnown = known.contains {
+                    let matches = $0.identifier.hasSuffix("*")
+                        ? identifier.hasPrefix(String($0.identifier.dropLast()))
+                        : identifier == $0.identifier
+                    return matches && $0.type == issue.auditType
+                }
                 log.lines.append("\(issue.compactDescription) id=\(identifier) label=\(label) known=\(isKnown)")
                 return isKnown
             }
@@ -89,7 +102,14 @@ final class AccessibilityAuditUITests: XCTestCase {
         help.tap()
         XCTAssertTrue(element("help-screen").waitForExistence(timeout: 5))
         audit("help")
-        app.navigationBars["ヘルプ"].buttons.firstMatch.tap()
+        // On a wide iPhone the back button sits in the side bar, not on
+        // the navigation bar.
+        let back = app.buttons["BackButton"].firstMatch
+        if back.exists {
+            back.tap()
+        } else {
+            app.navigationBars["ヘルプ"].buttons.firstMatch.tap()
+        }
         element("settings-done-button").tap()
 
         element("profile-row-テスト接続先").tap()
