@@ -289,3 +289,13 @@ UTM の Windows 11 ARM VM では次が決着しなかった。実機の Windows 
 - 2026-10-10 に UTM の Windows 11 ARM VM（Edge）で確認済み: 1 本指のなぞりがタッチのパン（文字が選択されずにスクロール）、tap、同時に触れた 2 本指 tap の右 click メニュー（下のリンクは開かない）、2 本指スクロール（指の位置で、指と同じ向き）、保存済みの旧「Windows のタッチとして送る」が「タッチした場所を操作」として読まれること。2 本指は `LiveRDPUITests` の `fingers`（XCTest のイベント合成）で、XCUIElement の twoFingerTap は desktop surface に届かない。未確認（実機で）: 0.1 秒より遅れた 2 本目（送ったタッチの cancel）、トラックパッドの tap→ドラッグ（XCUI では tap と次のタッチの間が 0.36 秒空き、0.25 秒に収まらない）。
 - 「タッチした場所を操作」で Windows に 1 本指がタッチとして届くこと（RDPEI が開いた後）。tap でクリック、長押しで右クリック、なぞると Edge やエクスプローラーでスクロール、テキストで選択。2 本目の指で送ったタッチが取り消され（誤タップにならない）、2 本指スクロール・2 本指タップの右クリック・ピンチの手元拡大になること。GNOME でも同様にタッチとして届くこと。ログイン画面（RDPEI 前）ではマウス扱いのまま操作できること。
 - トラックパッド（画面全体・デッキのパッド）: タップ→すぐ触れて動かすとドラッグ（エクスプローラーのファイルが開かずに動く、ウィンドウのタイトルバーで移動）。2 回タップでダブルクリック。1 回タップのクリックが 0.25 秒遅れて届くことの体感。
+
+## 15. UI test の既知の失敗（2026-10-19 時点）
+
+Xcode 27.1 / iOS 27.1 シミュレータ（iPhone Duo、iPad Pro 11-inch (M5)、iPhone 18 Pro）で、次は当面直さずに残している。
+
+- `AccessibilityAuditUITests.testEveryScreenPassesTheAudit`: 全機種で失敗する。指摘はコントラスト（failed / nearly passed）、Dynamic Type 非対応・一部非対応、Text clipped で、システム標準の部品に出ている。Xcode 27.1 にしてから出始めた。iPhone Duo の PC キーボードのキーが hit region の最小値を下回るのは `laptop-key-*` として既知扱いにしてある。
+- `ConnectionFlowUITests.testAddingAProfileFromTheList`（iPad のみ）: 直前の `testAConnectionOpensInItsOwnWindow` で開いたセッションのウィンドウが残り、一覧の操作が届かず失敗する。
+- 実行の注意:
+  - iOS 27.1 ではシートが出るときの layer animation の 1 つが終了を通知しないことがあり、XCTest が操作ごとに 60 秒 ×2 待つ。`-mremote-ui-testing-without-animations` で UIKit のアニメーションを止めて避けている（接続フローと監査のテスト）。キーボードのテストはアニメーションを止めると SwiftUI がフローティングボタンの位置を XCTest に遅れて伝えるので止めない。
+  - テストが 1 つでも失敗すると xcodebuild が `simctl diagnose` を最大 10 分走らせる。`-collect-test-diagnostics never` を付ける。
