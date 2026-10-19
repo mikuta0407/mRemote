@@ -167,7 +167,11 @@ final class ConnectionFlowUITests: XCTestCase {
         host.tap()
         app.typeText("desk.internal")
 
-        element("profile-manage-proxies").tap()
+        // A tap right after typing can be spent on the keyboard; try twice.
+        let manage = element("profile-manage-proxies")
+        manage.tap()
+        if !element("proxy-add").waitForExistence(timeout: 3) { manage.tap() }
+        _ = assertAppears("proxy-add", "the proxy list opens")
         element("proxy-add").tap()
         let proxyHost = assertAppears("proxy-host-field", "the proxy sheet opens")
         element("proxy-name-field").tap()
@@ -177,10 +181,22 @@ final class ConnectionFlowUITests: XCTestCase {
         element("proxy-port-field").tap()
         app.typeText("1081")
         shot("proxy-1-editor")
-        element("proxy-save").tap()
+        // On iPad the number pad floats in a popover, and the first tap
+        // outside it only closes the popover.
+        let save = element("proxy-save")
+        save.tap()
+        if save.waitForExistence(timeout: 2), save.isHittable { save.tap() }
         _ = assertAppears("proxy-row", "the saved proxy is listed")
         shot("proxy-2-list")
-        app.navigationBars.buttons.firstMatch.tap()
+        // The list's own back button: on iPad the list behind the sheet
+        // has a navigation bar too, and on a wide iPhone the bar's buttons
+        // move to a side toolbar.
+        let back = app.buttons["BackButton"].firstMatch
+        if back.exists {
+            back.tap()
+        } else {
+            app.navigationBars["プロキシ"].buttons.element(boundBy: 0).tap()
+        }
 
         let picker = assertAppears("profile-proxy-picker", "back on the connection editor")
         picker.tap()
