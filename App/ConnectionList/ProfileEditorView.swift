@@ -208,6 +208,7 @@ struct ProfileEditorView: View {
                 wakeSection
             }
             .navigationTitle(model.title)
+            .keepsNavigationBarOnScroll()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

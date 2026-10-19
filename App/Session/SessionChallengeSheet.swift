@@ -102,6 +102,7 @@ struct SessionChallengeSheet: View {
             }
         }
         .navigationTitle("資格情報が必要です")
+        .keepsNavigationBarOnScroll()
         .onAppear {
             username = challenge.username ?? defaultUsername ?? ""
             domain = challenge.domain ?? defaultDomain ?? ""
@@ -180,6 +181,7 @@ struct SessionChallengeSheet: View {
             }
         }
         .navigationTitle("ホスト鍵の確認")
+        .keepsNavigationBarOnScroll()
     }
 
     private func keyboardInteractiveForm(_ challenge: KeyboardInteractiveChallenge) -> some View {
@@ -215,6 +217,7 @@ struct SessionChallengeSheet: View {
             }
         }
         .navigationTitle("サーバーからの確認")
+        .keepsNavigationBarOnScroll()
         .onAppear { answers = Array(repeating: "", count: challenge.prompts.count) }
     }
 
@@ -243,6 +246,7 @@ struct SessionChallengeSheet: View {
             }
         }
         .navigationTitle("鍵のパスフレーズ")
+        .keepsNavigationBarOnScroll()
     }
 
     // MARK: - Certificates
@@ -308,6 +312,7 @@ struct SessionChallengeSheet: View {
             }
         }
         .navigationTitle("サーバー証明書の確認")
+        .keepsNavigationBarOnScroll()
     }
 
     private func symbol(for challenge: CertificateChallenge) -> String {

@@ -34,6 +34,7 @@ struct HelpView: View {
             }
         }
         .navigationTitle("ヘルプ")
+        .keepsNavigationBarOnScroll()
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("help-screen")
     }

@@ -443,6 +443,7 @@ struct SessionMenuSheet: View {
                 }
             }
             .navigationTitle("セッション")
+            .keepsNavigationBarOnScroll()
             // The display channel opens after the session is connected, so
             // what the server supports is read again when there is a menu to
             // show it in.

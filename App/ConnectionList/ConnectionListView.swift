@@ -40,6 +40,7 @@ struct ConnectionListView: View {
                 }
             }
             .navigationTitle("接続先")
+            .keepsNavigationBarOnScroll()
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {

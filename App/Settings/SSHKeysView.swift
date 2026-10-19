@@ -73,6 +73,7 @@ struct SSHKeysView: View {
             }
         }
         .navigationTitle("SSH の鍵")
+        .keepsNavigationBarOnScroll()
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
@@ -114,6 +115,7 @@ struct SSHKeysView: View {
                     }
                 }
                 .navigationTitle("秘密鍵を貼り付け")
+                .keepsNavigationBarOnScroll()
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -239,6 +241,7 @@ struct KnownHostsView: View {
             }
         }
         .navigationTitle("既知のホスト鍵")
+        .keepsNavigationBarOnScroll()
         .onAppear(perform: reload)
     }
 

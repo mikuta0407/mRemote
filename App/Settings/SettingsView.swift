@@ -148,6 +148,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("設定")
+            .keepsNavigationBarOnScroll()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

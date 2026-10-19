@@ -37,6 +37,7 @@ struct LicensesView: View {
             }
         }
         .navigationTitle("ライセンス")
+        .keepsNavigationBarOnScroll()
         .navigationBarTitleDisplayMode(.inline)
     }
 }

@@ -55,6 +55,7 @@ struct InputDiagnosticsView: View {
             }
         }
         .navigationTitle("入力診断")
+        .keepsNavigationBarOnScroll()
         .accessibilityIdentifier("input-diagnostics-screen")
     }
 

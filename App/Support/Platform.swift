@@ -27,3 +27,18 @@ extension View {
         }
     }
 }
+
+extension View {
+    /// Keeps the navigation bar, and the buttons on it, in place while the
+    /// content scrolls. iOS 27 otherwise tucks it away on scrolling down,
+    /// and on a wide iPhone (the iPhone Duo open) that takes Close, Save
+    /// and Cancel with it until the user scrolls back to the top.
+    @ViewBuilder
+    func keepsNavigationBarOnScroll() -> some View {
+        if #available(iOS 27, macCatalyst 27, *) {
+            toolbarMinimizationBehavior(.never, for: .navigationBar)
+        } else {
+            self
+        }
+    }
+}

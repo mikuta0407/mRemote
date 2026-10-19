@@ -43,6 +43,7 @@ struct ProxiesView: View {
             }
         }
         .navigationTitle("プロキシ")
+        .keepsNavigationBarOnScroll()
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("追加", systemImage: "plus") {
@@ -134,6 +135,7 @@ struct ProxyEditorView: View {
                 }
             }
             .navigationTitle(original.host.isEmpty ? "プロキシを追加" : "プロキシを編集")
+            .keepsNavigationBarOnScroll()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

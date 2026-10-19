@@ -104,6 +104,7 @@ struct ShortcutListEditor: View {
             }
         }
         .navigationTitle("ショートカット")
+        .keepsNavigationBarOnScroll()
         .toolbar { EditButton() }
         .sheet(item: $editing) { shortcut in
             NavigationStack {
@@ -163,6 +164,7 @@ struct ShortcutEditor: View {
             }
         }
         .navigationTitle(isNew ? String(localized: "ショートカットを追加") : String(localized: "ショートカットを編集"))
+        .keepsNavigationBarOnScroll()
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
