@@ -28,6 +28,21 @@ final class ConnectionFlowUITests: XCTestCase {
         }
     }
 
+    /// Scrolls the connection editor until `target` can be tapped, in short
+    /// drags along the sheet's left margin: with the keyboard up the sheet is
+    /// small, and a whole swipe carries a row past before it is seen.
+    private func scrollEditor(to target: XCUIElement) {
+        let cancel = element("profile-cancel-button")
+        guard cancel.waitForExistence(timeout: 5) else { return }
+        let origin = app.coordinate(withNormalizedOffset: .zero)
+        let x = cancel.frame.minX + 2
+        let top = cancel.frame.maxY
+        for _ in 0..<15 where !(target.exists && target.isHittable) {
+            origin.withOffset(CGVector(dx: x, dy: top + 220))
+                .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: x, dy: top + 80)))
+        }
+    }
+
     private func element(_ identifier: String) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
@@ -107,18 +122,14 @@ final class ConnectionFlowUITests: XCTestCase {
         app.typeText("pc.internal")
 
         let gateway = element("profile-gateway-toggle")
-        for _ in 0..<6 where !gateway.isHittable {
-            app.swipeUp()
-        }
+        scrollEditor(to: gateway)
         gateway.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
         let gatewayHost = assertAppears("profile-gateway-host-field", "the gateway's fields appear")
         gatewayHost.tap()
         app.typeText("gw.example.com")
 
         let folder = element("profile-shared-folder-picker")
-        for _ in 0..<6 where !folder.isHittable {
-            app.swipeUp()
-        }
+        scrollEditor(to: folder)
         folder.tap()
         let appFolder = app.buttons["このアプリのフォルダ"].firstMatch
         XCTAssertTrue(appFolder.waitForExistence(timeout: 5), "the folder choices are listed")
@@ -131,14 +142,10 @@ final class ConnectionFlowUITests: XCTestCase {
         XCTAssertTrue(edit.waitForExistence(timeout: 5))
         edit.tap()
         let reopened = element("profile-gateway-host-field")
-        for _ in 0..<6 where !reopened.exists {
-            app.swipeUp()
-        }
+        scrollEditor(to: reopened)
         XCTAssertEqual(reopened.value as? String, "gw.example.com", "the gateway comes back")
         let reopenedFolder = element("profile-shared-folder-picker")
-        for _ in 0..<6 where !reopenedFolder.isHittable {
-            app.swipeUp()
-        }
+        scrollEditor(to: reopenedFolder)
         XCTAssertTrue(
             (reopenedFolder.value as? String)?.contains("このアプリのフォルダ") == true
                 || app.staticTexts["このアプリのフォルダ"].exists,
@@ -269,7 +276,7 @@ final class ConnectionFlowUITests: XCTestCase {
         host.tap()
         app.typeText("pc.local")
         let wake = element("profile-wake-toggle")
-        for _ in 0..<6 where !wake.isHittable { app.swipeUp() }
+        scrollEditor(to: wake)
         wake.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
         let mac = assertAppears("profile-mac-field", "the address field appears")
         mac.tap()
