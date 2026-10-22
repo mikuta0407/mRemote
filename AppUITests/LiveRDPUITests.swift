@@ -13,12 +13,15 @@ import XCTest
 ///     TEST_RUNNER_MREMOTE_LIVE_PASSWORD=...
 ///     TEST_RUNNER_MREMOTE_LIVE_HOLD=600      # seconds to keep the session
 ///     TEST_RUNNER_MREMOTE_LIVE_COMMANDS=/path/commands.txt   # optional
+///     TEST_RUNNER_MREMOTE_LIVE_SCRIPT='sleep 5;orient left'   # optional
 ///     TEST_RUNNER_MREMOTE_APP_<NAME>=<value>                  # app environment
 ///
 /// With a command file, lines appended to it while the session is held are
 /// carried out in order, and `<file>.done` gets one line per finished
-/// command. Elements are named by accessibility identifier; fractions are
-/// of the element's size.
+/// command. On a device, which cannot read a file on the Mac, the same
+/// commands can come in TEST_RUNNER_MREMOTE_LIVE_SCRIPT, separated by ";",
+/// and the results go to the test log. Elements are named by accessibility
+/// identifier; fractions are of the element's size.
 ///
 ///     tap <id>                         tap
 ///     twotap <id|window>               two-finger tap
@@ -94,6 +97,10 @@ final class LiveRDPUITests: XCTestCase {
         // Held for whoever is driving: the session stays up until this ends.
         let commandPath = environment["MREMOTE_LIVE_COMMANDS"]
         var performed = 0
+        for line in (environment["MREMOTE_LIVE_SCRIPT"] ?? "").split(separator: ";") {
+            let command = line.trimmingCharacters(in: .whitespaces)
+            if !command.isEmpty { print("live script: \(perform(command)) \(command)") }
+        }
         let deadline = Date().addingTimeInterval(hold)
         while Date() < deadline {
             // Prompts can come back, after a reconnect for instance.
