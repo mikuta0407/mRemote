@@ -355,6 +355,12 @@ final class LiveRDPUITests: XCTestCase {
         let name = element("profile-name-field")
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.tap()
+        // A Japanese simulator types into the romaji keyboard, which turns
+        // a host name into kana: move on to a Latin keyboard first.
+        let globe = app.keyboards.buttons["次のキーボード"].firstMatch
+        for _ in 0..<3 where globe.exists && ((globe.value as? String) ?? "").contains("日本語") {
+            globe.tap()
+        }
         app.typeText(profileName)
         element("profile-host-field").tap()
         app.typeText(host)
@@ -366,6 +372,15 @@ final class LiveRDPUITests: XCTestCase {
             app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count + 2) + port)
         }
         let username = app.textFields["ユーザー名"].firstMatch
+        // On a short screen (the iPhone Duo folded) the row is built only
+        // once the form scrolls to it.
+        let editor = app.collectionViews
+            .matching(NSPredicate(format: "identifier != 'profile-list'")).firstMatch
+        // Dragged high up: the keyboard's bar of suggestions covers the middle.
+        for _ in 0..<10 where !(username.exists && username.isHittable) {
+            editor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+                .press(forDuration: 0.05, thenDragTo: editor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)))
+        }
         username.tap()
         app.typeText(user)
         // TEST_RUNNER_MREMOTE_LIVE_PLATFORM=macOS: a Mac running macos-rdp-server.
@@ -375,7 +390,10 @@ final class LiveRDPUITests: XCTestCase {
             // (the keyboard from the fields may still be up).
             let form = app.collectionViews
                 .matching(NSPredicate(format: "identifier != 'profile-list'")).firstMatch
-            for _ in 0..<15 where !(picker.exists && picker.isHittable) { form.swipeUp() }
+            for _ in 0..<15 where !(picker.exists && picker.isHittable) {
+                form.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+                    .press(forDuration: 0.05, thenDragTo: form.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)))
+            }
             picker.tap()
             let option = app.buttons["macOS（macos-rdp-server）"].firstMatch
             if option.waitForExistence(timeout: 3) { option.tap() }
