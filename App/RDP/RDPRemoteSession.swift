@@ -530,7 +530,7 @@ actor RDPRemoteSession: DesktopSession, AudioCapableSession, ClipboardCapableSes
         if configuration.prefersH264 {
             flags |= mr_rdp_channel_flags(MR_RDP_CHANNEL_FLAG_H264)
         }
-        if configuration.remotePlatform == .macOS {
+        if configuration.remotePlatform.offersMacExtensions {
             flags |= mr_rdp_channel_flags(MR_RDP_CHANNEL_FLAG_MACRDPX)
         }
         return flags
@@ -602,7 +602,7 @@ actor RDPRemoteSession: DesktopSession, AudioCapableSession, ClipboardCapableSes
             displayScale: displayScale,
             securityPolicy: Self.securityPolicy(for: configuration.securityPolicy)
         )
-        if configuration.remotePlatform == .macOS {
+        if configuration.remotePlatform.offersMacExtensions {
             connection.macrdpxCaps = MacExtensionFeatures.all.rawValue
         }
         macStatus = nil

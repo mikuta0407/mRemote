@@ -49,6 +49,10 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
     private(set) var microphoneFormat: MicrophoneFormat?
     /// A Mac server's Mac extensions, once it has agreed to them.
     private(set) var macExtensions: MacExtensionStatus?
+    /// The host is a Mac: the profile says so, or the server agreed to the
+    /// Mac extensions. Kept across reconnects, so the keyboard does not
+    /// flip back to a PC's while the session reconnects.
+    private(set) var isMacHost: Bool
     /// Shown as a toast; never contains clipboard text (docs/ui-flow.md 6.2).
     var clipboardMessage: String?
     private(set) var isTransferringClipboard = false
@@ -145,6 +149,7 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
         self.id = session.id
         self.displayName = configuration.displayName
         self.runtime = SessionRuntimeState(from: configuration)
+        self.isMacHost = configuration.remotePlatform == .macOS
         self.softwareKeyboard = SoftwareKeyboardController(
             mode: environment.globalSettings.softwareKeyboardMode,
             layout: configuration.keyboardLayout,
@@ -412,6 +417,10 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
             if Platform.isMac { await mirrorRemoteClipboard() }
         case .macExtensions(let status):
             macExtensions = status
+            if !isMacHost {
+                isMacHost = true
+                softwareKeyboard.isMacHost = true
+            }
         case let .portForwardFailed(localPort, error):
             clipboardMessage = error == EADDRINUSE
                 ? String(localized: "ポート転送 localhost:\(localPort) は使用中のため開けませんでした。")

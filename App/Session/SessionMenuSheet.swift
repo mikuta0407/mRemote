@@ -35,6 +35,7 @@ struct SessionMenuSheet: View {
     @AppStorage(FoldResolutionPolicy.storageKey)
     private var foldPolicy = FoldResolutionPolicy.resizeToFit
     @AppStorage(LaptopDeckArrangement.trackpadButtonsStorageKey) private var showsTrackpadButtons = true
+    @AppStorage(LaptopDeckArrangement.macTrackpadButtonsStorageKey) private var showsMacTrackpadButtons = false
     @AppStorage(DesktopSafeAreaPolicy.storageKey)
     private var safeAreaPolicy = DesktopSafeAreaPolicy.avoid
     @AppStorage(LaptopDeckPlacement.storageKey) private var deckPlacement = LaptopDeckPlacement.docked
@@ -322,7 +323,7 @@ struct SessionMenuSheet: View {
                     .accessibilityIdentifier("session-scroll-picker")
                     // On the iPhone and iPad only: the Mac app has the Mac's
                     // own trackpad.
-                    if model.configuration.remotePlatform == .macOS, !Platform.isMac {
+                    if model.isMacHost, !Platform.isMac {
                         Picker("3・4本指のスワイプ", selection: $swipeGestureMode) {
                             Text("ショートカットを送る").tag(MacSwipeGestureMode.shortcuts)
                             Text("指に合わせて動かす（実験的）").tag(MacSwipeGestureMode.followFingers)
@@ -411,8 +412,12 @@ struct SessionMenuSheet: View {
                     .disabled(deckPreference == .never)
                     .accessibilityIdentifier("session-laptop-caps-role")
                     // Without buttons: tap to click, two-finger tap for the
-                    // right button, hold then move to drag.
-                    Toggle("トラックパッドのクリックボタン", isOn: $showsTrackpadButtons)
+                    // right button, tap then touch and move to drag. The
+                    // Mac's keyboard keeps its own setting, off at first.
+                    Toggle(
+                        "トラックパッドのクリックボタン",
+                        isOn: model.isMacHost || deckPlatform == .mac ? $showsMacTrackpadButtons : $showsTrackpadButtons
+                    )
                         .disabled(deckPreference == .never || !deckArrangement.hasTrackpad)
                         .accessibilityIdentifier("session-laptop-trackpad-buttons")
                 }

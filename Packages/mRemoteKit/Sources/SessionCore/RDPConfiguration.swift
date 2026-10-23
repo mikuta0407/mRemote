@@ -182,15 +182,15 @@ public struct RDPConfiguration: Hashable, Sendable, Codable {
     public var microphone: Bool?
     /// H.264 (AVC420) graphics. Nil is the default, on.
     public var usesH264: Bool?
-    /// A Mac running macos-rdp-server, reached with the Mac extensions. Nil
-    /// is a standard connection.
+    /// What kind of computer this reaches. Nil is automatic: the Mac
+    /// extensions are offered and a Mac server takes them up.
     public var platform: RemotePlatform?
     /// The stream a Mac server is asked for. Nil is automatic.
     public var streamQuality: StreamQuality?
 
     public var redirectsMicrophone: Bool { microphone ?? false }
     public var prefersH264: Bool { usesH264 ?? true }
-    public var remotePlatform: RemotePlatform { platform ?? .standard }
+    public var remotePlatform: RemotePlatform { platform ?? .automatic }
     public var preferredStreamQuality: StreamQuality { streamQuality ?? .automatic }
 
     public init(

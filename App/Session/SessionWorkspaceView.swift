@@ -30,6 +30,7 @@ struct SessionWorkspaceView: View {
     @AppStorage(CapsLockRole.storageKey) private var capsLockRole = CapsLockRole.capsLock
     @AppStorage(LaptopKeyboardPlatform.storageKey) private var deckPlatform = LaptopKeyboardPlatform.windows
     @AppStorage(LaptopDeckArrangement.trackpadButtonsStorageKey) private var showsTrackpadButtons = true
+    @AppStorage(LaptopDeckArrangement.macTrackpadButtonsStorageKey) private var showsMacTrackpadButtons = false
     @AppStorage(LaptopDeckPlacement.storageKey) private var deckPlacement = LaptopDeckPlacement.docked
     @AppStorage(DeckLayout.portraitFractionKey) private var deckFractionPortrait = DeckLayout.standardFraction
     @AppStorage(DeckLayout.landscapeFractionKey) private var deckFractionLandscape = DeckLayout.standardFraction
@@ -381,9 +382,14 @@ struct SessionWorkspaceView: View {
         UIDevice.current.userInterfaceIdiom == .pad || hingePosture != .unavailable
     }
 
+    /// A Mac server is typed on with a Mac's keys (⌘, 英数/かな).
+    private var effectiveDeckPlatform: LaptopKeyboardPlatform {
+        model.isMacHost ? .mac : deckPlatform
+    }
+
     /// A Mac host gets the Mac's own shortcuts; the user's list is for Windows.
     private var deckShortcuts: [KeyShortcut] {
-        model.configuration.remotePlatform == .macOS ? KeyShortcut.macDefaults : shortcuts.shortcuts
+        model.isMacHost ? KeyShortcut.macDefaults : shortcuts.shortcuts
     }
 
     private func laptopDeck(split: Bool) -> some View {
@@ -407,9 +413,8 @@ struct SessionWorkspaceView: View {
             channel: laptopChannel,
             isInputEnabled: model.acceptsInput && scenePhase == .active,
             capsLockRole: capsLockRole,
-            showsTrackpadButtons: showsTrackpadButtons,
-            // A Mac server is typed on with a Mac's keys (⌘, 英数/かな).
-            platform: model.configuration.remotePlatform == .macOS ? .mac : deckPlatform,
+            showsTrackpadButtons: effectiveDeckPlatform == .mac ? showsMacTrackpadButtons : showsTrackpadButtons,
+            platform: effectiveDeckPlatform,
             isSplit: split
         )
     }

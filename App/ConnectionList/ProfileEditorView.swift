@@ -136,11 +136,12 @@ struct ProfileEditorView: View {
                 gatewaySection
                 Section {
                     Picker("接続先", selection: $model.remotePlatform) {
+                        Text("自動判定").tag(RemotePlatform.automatic)
                         Text("Windows / 標準の RDP").tag(RemotePlatform.standard)
                         Text("macOS（macos-rdp-server）").tag(RemotePlatform.macOS)
                     }
                     .accessibilityIdentifier("profile-platform-picker")
-                    if model.remotePlatform == .macOS {
+                    if model.remotePlatform.offersMacExtensions {
                         Picker("画質", selection: $model.streamQuality) {
                             ForEach(StreamQuality.allCases, id: \.self) { quality in
                                 Text(StreamQualityLabel.text(quality)).tag(quality)
@@ -151,10 +152,13 @@ struct ProfileEditorView: View {
                 } header: {
                     Text("接続先の種類")
                 } footer: {
-                    if model.remotePlatform == .macOS {
+                    switch model.remotePlatform {
+                    case .automatic:
+                        Text("接続先が macos-rdp-server を動かす Mac なら、接続したときに Mac 同士の拡張に切り替わり、キーボードも Mac のものになります。それ以外のサーバーには通常の RDP で接続します。")
+                    case .macOS:
                         Text("Mac 同士の拡張を使います。⌘ は ⌘ のまま、Fn や左右の修飾キー、トラックパッドの滑らかなスクロールもそのまま届きます。拡張に対応しないサーバーには通常の RDP で接続します。")
-                    } else {
-                        Text("macos-rdp-server を動かす Mac に接続するときは「macOS」を選ぶと、Mac のキー操作とスクロールがそのまま届きます。")
+                    case .standard:
+                        Text("Mac 同士の拡張を使わず、通常の RDP だけで接続します。")
                     }
                 }
                 Section {

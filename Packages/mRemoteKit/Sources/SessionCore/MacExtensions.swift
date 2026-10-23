@@ -3,15 +3,22 @@ import Foundation
 /// What kind of computer a connection reaches.
 ///
 /// Every RDP server speaks plain RDP, and that is all a `.standard`
-/// connection uses. A `.macOS` connection also offers the Mac RDP eXtensions
-/// (the MACRDPX channel of macos-rdp-server): when the server takes them up,
+/// connection uses. The others also offer the Mac RDP eXtensions (the
+/// MACRDPX channel of macos-rdp-server): when the server takes them up,
 /// keys travel as Mac keys with their exact modifiers, the pointer and
 /// trackpad scrolling travel natively, and the stream rate can be chosen.
 /// A server that does not know the channel never opens it, and the
 /// connection simply stays plain RDP.
+///
+/// `.automatic` finds out from the server: the session is a Mac's once the
+/// server agrees to the extensions. `.macOS` is a Mac's from the start.
 public enum RemotePlatform: String, Hashable, Sendable, Codable, CaseIterable {
+    case automatic
     case standard
     case macOS
+
+    /// Whether the connection asks for the Mac extensions.
+    public var offersMacExtensions: Bool { self != .standard }
 }
 
 /// How much of the network the desktop stream may use, for a Mac server.

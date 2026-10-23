@@ -30,7 +30,8 @@ final class SoftwareKeyboardController {
     /// then offers no paste.
     @ObservationIgnored private let paste: ((String) -> Void)?
     /// A Mac host: the bar names its keys as a Mac's (⌘ ⌥ ⌃, 英数/かな).
-    let isMacHost: Bool
+    /// Set later when the host turns out to be a Mac.
+    var isMacHost: Bool
 
     init(
         mode: SoftwareKeyboardMode,
