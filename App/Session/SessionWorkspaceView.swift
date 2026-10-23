@@ -19,6 +19,8 @@ struct SessionWorkspaceView: View {
     @State private var toastText: String?
     @State private var hingePosture: HingePosture = .unavailable
     @State private var windowSafeArea = EdgeInsets()
+    /// The on-screen keyboard's height over the window's bottom edge.
+    @State private var keyboardInset: CGFloat = 0
     @State private var laptopChannel = LaptopDeckChannel()
     /// A deck 自動 brought up was put away with the keyboard button: it stays
     /// away until the device is unfolded, without turning 自動 off.
@@ -69,6 +71,10 @@ struct SessionWorkspaceView: View {
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             WindowSafeAreaReader { windowSafeArea = $0 }
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            KeyboardInsetReader { keyboardInset = $0 }
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
@@ -190,6 +196,17 @@ struct SessionWorkspaceView: View {
     /// The desktop keeps its place in the hierarchy either way: the deck is
     /// added after it rather than the two being swapped between layouts,
     /// which would rebuild the surface and drop its texture.
+    /// What the workspace keeps clear of. The desktop keeps its size under
+    /// the keyboard and pans to the pointer; a terminal's prompt is at the
+    /// bottom, so the terminal shrinks above the keyboard instead.
+    private func avoidedInsets(_ safeArea: EdgeInsets) -> EdgeInsets {
+        var insets = safeAreaPolicy == .avoid ? safeArea : EdgeInsets()
+        if model.terminal != nil {
+            insets.bottom = max(insets.bottom, keyboardInset)
+        }
+        return insets
+    }
+
     @ViewBuilder
     private func split(in size: CGSize, safeArea: EdgeInsets) -> some View {
         let isPortrait = size.height > size.width
@@ -217,7 +234,7 @@ struct SessionWorkspaceView: View {
             : docked
         let layout = WorkspaceLayout(
             size: size,
-            safeArea: safeAreaPolicy == .avoid ? safeArea : EdgeInsets(),
+            safeArea: avoidedInsets(safeArea),
             deck: deck,
             foldPolicy: foldPolicy,
             lockedDeck: docked

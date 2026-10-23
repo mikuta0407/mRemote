@@ -74,6 +74,18 @@ final class LiveSSHUITests: XCTestCase {
         XCTAssertTrue(waitForTerminal(containing: "typed-42"), "typing reaches the shell\n\(terminalText())")
         shot("3-terminal")
 
+        // A screenful later the prompt is on the bottom row: the terminal
+        // ends above the keyboard and its key bar, not behind them.
+        app.typeText("seq 1 120; echo bottom-$((5*5))\n")
+        XCTAssertTrue(waitForTerminal(containing: "bottom-25"), "the output arrives\n\(terminalText())")
+        let bar = element("terminal-key-Esc")
+        XCTAssertTrue(bar.waitForExistence(timeout: 5))
+        XCTAssertLessThanOrEqual(
+            terminal.frame.maxY, bar.frame.minY + 1,
+            "the terminal \(terminal.frame) stays above the key bar \(bar.frame)"
+        )
+        shot("3b-terminal-full")
+
         // The key bar. With DECCKM on, as full-screen programs set it, PgUp
         // goes to the remote program; the tty echoes what arrives.
         app.typeText("printf '\\033[?1h'; cat -v\n")
