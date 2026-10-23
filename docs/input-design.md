@@ -245,14 +245,14 @@ effectiveDelta = deviceDelta × sensitivity × (isReversed ? -1 : 1)
 | 方式 | 1 本指 | 2 本指 | ローカル表示 |
 |---|---|---|---|
 | 直接タッチ（`DirectTouchGestureTracker`）。RDPEI が開いている接続先（Windows、GNOME）では 1 本指をタッチとして送る（下記） | tap: その位置で左 click。0.5 秒以内・24pt 以内の 2 回目の tap は 1 回目と同じ位置を押し、double click として届く。長押し 0.5 秒: 右 click。なぞる: 押した位置から左ドラッグ | 移動: スクロール。tap: 右 click | pinch で zoom。zoom 中は pinch したまま動かすと viewport 移動 |
-| トラックパッド（`TrackpadGestureTracker`） | なぞる: 相対移動。tap: 左 click（2 回目のタッチを 0.25 秒待ってから送る）。tap の直後にもう一度触れて動かす、または押さえてから動かす: ドラッグ。2 回 tap: double click | 移動: スクロール。tap: 右 click | 同上。ポインターが端に寄ると表示が追従 |
+| トラックパッド（`TrackpadGestureTracker`） | なぞる: 相対移動。tap: 左 click（2 回目のタッチを 0.35 秒待ってから送る）。tap の直後にもう一度触れて動かす、または押さえてから動かす: ドラッグ。2 回 tap: double click | 移動: スクロール。tap: 右 click | 同上。ポインターが端に寄ると表示が追従 |
 | 表示の移動だけ | viewport 移動。double tap: Fit/100% 切替 | — | pinch で zoom |
 
 以前あった 4 番目の方式「Windows のタッチとして送る」（すべての指を contact として送り、pinch も Windows に渡す）は、直接タッチがタッチ対応の接続先へ 1 本指をタッチとして送るようになって違いが 2 本指だけになったため、2026-10-09 に廃止した。保存済みの設定は直接タッチとして読む。
 
 直接タッチで接続先が RDPEI を開いているとき（`DesktopInputSink.acceptsTouch`。Windows、GNOME Remote Desktop）は、1 本指を Windows App のタッチモードと同じくタッチ（contact）として送り、tap・長押しの右 click・パンや選択は接続先が決める。方式は最初の指が触れたときに決める。最初の指は 0.1 秒（`touchHoldBack`）送らずに待ち、その間に 2 本目が触れたらタッチは一度も送らずに上表のマウス操作にする。待つ間に指が離れた（tap）・動いた（パン）ときは、触れた位置の down からすぐ送る。0.1 秒より後の 2 本目は、送ったタッチを cancel してマウス操作に引き継ぐ。Windows（少なくとも Edge）は down 直後の cancel を tap として扱うため、待たずに送ると 2 本指 tap の下でリンクが開いた。2 本指（スクロール、tap で右 click、pinch zoom）はどの接続先でも同じになる。2 本指スクロールは最初の指の位置へポインターを移してからホイールを送る（ホイールはポインターの下のウィンドウに届き、タッチはポインターを動かさないため）。Mac（macos-rdp-server は RDPEI を持たない）や RDPEI が開く前のログイン画面では、上表のマウス操作になる。
 
-トラックパッドの tap の click を 0.25 秒待つのは、tap の直後のドラッグをボタンの押下だけにするため。click をすぐ送ると、続く押下が Windows では double click になり、ファイルをドラッグしようとして開いてしまう。
+トラックパッドの tap の click を 0.35 秒待つのは、tap の直後のドラッグをボタンの押下だけにするため。0.25 秒では、落ち着いて 2 回目に触れると間に合わなかった。click をすぐ送ると、続く押下が Windows では double click になり、ファイルをドラッグしようとして開いてしまう。
 
 pinch が成立すると UIKit が touch を cancel するため、途中のドラッグはボタンを離して終わり、click は送らない。折りたたみ端末で手元デッキをキーボードのみにしたときは、選択に関係なくトラックパッド方式になる。
 

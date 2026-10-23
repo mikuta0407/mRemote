@@ -112,7 +112,9 @@ final class TrackpadGestureTracker {
     static let tapTravel: CGFloat = 8
     static let tapDuration: TimeInterval = 0.3
     static let dragHold: TimeInterval = 0.45
-    static let doubleTapInterval: TimeInterval = 0.25
+    /// Long enough to catch the second touch of a tap-then-drag at an
+    /// unhurried pace, as a Mac's tap to drag does.
+    static let doubleTapInterval: TimeInterval = 0.35
     /// A two-finger tap waits this long for another before it is a right click.
     static let smartZoomInterval: TimeInterval = 0.3
     /// Travel that makes three fingers a swipe along one axis, and that

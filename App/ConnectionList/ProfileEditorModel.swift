@@ -80,7 +80,7 @@ final class ProfileEditorModel: Identifiable {
     var proxyID: ProxyID?
     var redirectsMicrophone = false
     var usesH264 = true
-    var remotePlatform = RemotePlatform.standard
+    var remotePlatform = RemotePlatform.automatic
     var streamQuality = StreamQuality.automatic
     var remoteProgram = ""
     var remoteArguments = ""
@@ -341,8 +341,8 @@ final class ProfileEditorModel: Identifiable {
         }
         configuration.microphone = redirectsMicrophone ? true : nil
         configuration.usesH264 = usesH264 ? nil : false
-        configuration.platform = remotePlatform == .standard ? nil : remotePlatform
-        configuration.streamQuality = remotePlatform == .macOS && streamQuality != .automatic
+        configuration.platform = remotePlatform == .automatic ? nil : remotePlatform
+        configuration.streamQuality = remotePlatform.offersMacExtensions && streamQuality != .automatic
             ? streamQuality : nil
         let program = remoteProgram.trimmingCharacters(in: .whitespaces)
         configuration.remoteApp = program.isEmpty

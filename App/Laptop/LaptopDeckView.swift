@@ -30,8 +30,11 @@ enum LaptopDeckArrangement: String, CaseIterable {
     static let splitInLandscapeStorageKey = "laptop-deck-split-landscape"
     /// Whether the pad has left and right buttons under it. Without them the
     /// pad takes their room: a tap is a left click, a two-finger tap a right
-    /// click, and hold-then-move drags.
+    /// click, and a tap then a touch moved (or held then moved) drags.
     static let trackpadButtonsStorageKey = "laptop-trackpad-buttons"
+    /// The same for the Mac's keyboard, off unless asked for: a Mac's
+    /// trackpad has no buttons.
+    static let macTrackpadButtonsStorageKey = "laptop-trackpad-buttons-mac"
 }
 
 extension CapsLockRole {
