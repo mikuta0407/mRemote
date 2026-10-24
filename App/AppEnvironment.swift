@@ -417,6 +417,19 @@ final class AppEnvironment {
         Task { await focus(nil) }
     }
 
+    /// A tab on another host, from a terminal's tab bar: a new shell on that
+    /// host's session if it runs, else a connection to it.
+    func openTerminalTab(on profile: ConnectionProfile, from current: SessionWorkspaceModel) async {
+        if let running = runningSession(for: profile), running.terminal != nil {
+            if running.id != current.id { switchTo(running) }
+            await running.openTerminalTab()
+            return
+        }
+        current.isMenuPresented = false
+        current.softwareKeyboard.hide()
+        await connect(to: profile)
+    }
+
     func runningSession(for profile: ConnectionProfile) -> SessionWorkspaceModel? {
         runningSessions.last { $0.configuration.profileID == profile.id }
     }

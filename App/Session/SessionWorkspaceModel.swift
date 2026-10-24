@@ -95,18 +95,26 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
     private let desktop: (any DesktopSession)?
     /// Set instead for an SSH session (docs/ssh-design.md 8.2).
     let terminal: (any TerminalSession)?
-    /// The session's terminal, for the menu's font size and clear commands.
-    /// Held here, not by the screen: it is the terminal's state, and comes
-    /// back when the session is shown again.
-    @ObservationIgnored var terminalView: SessionTerminalView?
+    /// The session's terminals, one per tab or pane. Held here, not by the
+    /// screen: they are the terminals' state, and come back when the session
+    /// is shown again.
+    @ObservationIgnored var terminalViews: [TerminalID: SessionTerminalView] = [:]
+    @ObservationIgnored private(set) var terminalChannels: [TerminalID: TerminalChannel] = [:]
+    /// How they are arranged: tabs, and panes in each.
+    private(set) var terminalTabs = TerminalTabsState()
+    /// The terminal that types, for the menu's font size and clear commands.
+    var terminalView: SessionTerminalView? {
+        terminalTabs.focusedTerminal.flatMap { terminalViews[$0] }
+    }
 
     /// The session closed for good.
     func releaseTerminal() {
-        terminalView?.detach()
-        terminalView = nil
+        for view in terminalViews.values { view.detach() }
+        terminalViews.removeAll()
     }
-    /// What the shell put in the title (OSC 0/2), shown in the window title.
-    var terminalTitle: String?
+    /// What each shell put in the title (OSC 0/2), shown on its tab.
+    var terminalTitles: [TerminalID: String] = [:]
+    var terminalTitle: String? { terminalTabs.focusedTerminal.flatMap { terminalTitles[$0] } }
     /// A multi-line paste waiting for the user to confirm it.
     private(set) var pendingPaste: String?
     @ObservationIgnored private var pendingPasteAction: (() -> Void)?
@@ -166,6 +174,10 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
                 }
             }
         )
+        if let primary = terminal?.primaryTerminal {
+            terminalChannels[primary.id] = primary
+            terminalTabs.addTab(primary.id)
+        }
     }
 
     /// From the menu: close it, then bring the keyboard up once the sheet is
@@ -294,6 +306,101 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
 
     // MARK: - Terminal
 
+    /// The size a new shell starts at: the one on screen's, until its own
+    /// pane lays it out.
+    private var newTerminalSize: TerminalSize {
+        terminalView?.terminalSize ?? .standard
+    }
+
+    /// Another shell on the same connection, in a tab of its own.
+    func openTerminalTab() async {
+        guard let terminal, let channel = await terminal.openTerminal(size: newTerminalSize) else {
+            terminalRefused()
+            return
+        }
+        terminalChannels[channel.id] = channel
+        terminalTabs.addTab(channel.id)
+    }
+
+    /// The pane that types, divided; a new shell in the other half.
+    func splitTerminal(_ axis: PaneAxis) async {
+        guard let terminal, let channel = await terminal.openTerminal(size: newTerminalSize) else {
+            terminalRefused()
+            return
+        }
+        terminalChannels[channel.id] = channel
+        terminalTabs.split(axis: axis, with: channel.id)
+    }
+
+    /// Closes a pane's shell, as closing a tab. The last one ends the session.
+    func closeTerminal(_ id: TerminalID) async {
+        guard let terminal else { return }
+        if terminalTabs.allTerminals.count <= 1 {
+            await disconnect()
+            return
+        }
+        forgetTerminal(id)
+        await terminal.closeTerminal(id)
+    }
+
+    /// Every pane of a tab, closed.
+    func closeTerminalTab(_ tabID: UUID) async {
+        guard let tab = terminalTabs.tabs.first(where: { $0.id == tabID }) else { return }
+        if tab.root.leaves.count >= terminalTabs.allTerminals.count {
+            await disconnect()
+            return
+        }
+        for id in tab.root.leaves { await closeTerminal(id) }
+    }
+
+    /// A shortcut from a terminal's keyboard (⌘T, ⌘D, ...).
+    func perform(_ command: TerminalLayoutCommand, from id: TerminalID) async {
+        focusTerminal(id)
+        switch command {
+        case .newTab: await openTerminalTab()
+        case .splitHorizontal: await splitTerminal(.horizontal)
+        case .splitVertical: await splitTerminal(.vertical)
+        case .closePane: await closeTerminal(id)
+        case .nextTab: selectTerminalTab(offset: 1)
+        case .previousTab: selectTerminalTab(offset: -1)
+        case .nextPane: focusTerminalPane(offset: 1)
+        case .previousPane: focusTerminalPane(offset: -1)
+        }
+    }
+
+    func focusTerminal(_ id: TerminalID) {
+        guard terminalTabs.focusedTerminal != id else { return }
+        terminalTabs.focus(id)
+    }
+
+    func selectTerminalTab(_ tabID: UUID) {
+        terminalTabs.select(tabID)
+    }
+
+    func selectTerminalTab(offset: Int) {
+        terminalTabs.selectTab(offset: offset)
+    }
+
+    func focusTerminalPane(offset: Int) {
+        terminalTabs.focusPane(offset: offset)
+    }
+
+    func setTerminalSplitRatio(_ ratio: Double, of splitID: UUID) {
+        terminalTabs.setRatio(ratio, of: splitID)
+    }
+
+    /// A terminal's pane gone: its view and output stop.
+    private func forgetTerminal(_ id: TerminalID) {
+        terminalTabs.remove(id)
+        terminalViews.removeValue(forKey: id)?.detach()
+        terminalChannels.removeValue(forKey: id)
+        terminalTitles.removeValue(forKey: id)
+    }
+
+    private func terminalRefused() {
+        clipboardMessage = String(localized: "新しいシェルを開けませんでした。接続を確認してください。")
+    }
+
     func toggleTerminalKeyboard() {
         guard let terminalView else { return }
         if terminalView.isFirstResponder {
@@ -421,6 +528,8 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
             lastReceivedText = nil
             await refreshRemoteClipboardKinds()
             if Platform.isMac { await mirrorRemoteClipboard() }
+        case let .terminalEnded(id, _):
+            forgetTerminal(id)
         case .macExtensions(let status):
             macExtensions = status
             if !isMacHost {

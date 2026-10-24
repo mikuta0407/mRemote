@@ -5,55 +5,230 @@ import SwiftTerm
 import SessionCore
 import SSHProtocol
 
-/// The terminal a session's shell draws into (docs/ssh-design.md 8.2).
-///
-/// SwiftTerm does the emulation and owns text input - including the IME's
-/// marked text, which a terminal wants, unlike the RDP surface. This wraps
-/// it with what the app adds: output drained from the session's buffer on the
-/// main thread in time slices, keystrokes to the session's input sink, the
-/// PTY size sent on resize, and paste checked before it can run commands.
-struct TerminalSurface: UIViewRepresentable {
-    let session: any TerminalSession
-    let settings: EffectiveSSHSettings
-    let isInputEnabled: Bool
+/// What the workspace tells a terminal's view on each update: whether it
+/// takes input, what its pane is, and where its requests go.
+struct TerminalViewConfiguration {
+    var isInputEnabled: Bool
     var clipboardPolicy: ClipboardPolicy = .bidirectional
-    /// The session's terminal from an earlier appearance. Reused, so the
-    /// screen, scrollback and the modes the remote program set survive a
-    /// trip to the list and back.
-    var existing: SessionTerminalView?
+    /// Its pane types: it takes the keyboard from the terminal that has it.
+    var isFocused = true
+    var accessibilityID = "terminal-surface"
     var onSendRefused: () -> Void = {}
     var onPasteNeedsConfirmation: (String, @escaping () -> Void) -> Void = { _, proceed in proceed() }
     var onOpenLink: (URL) -> Void = { _ in }
     var onTitle: (String) -> Void = { _ in }
-    /// Gives the workspace a way to reach the view (menu commands, focus).
-    var onReady: (SessionTerminalView) -> Void = { _ in }
+    /// A touch chose this terminal: its pane types now.
+    var onFocus: () -> Void = {}
+    var onCommand: (TerminalLayoutCommand) -> Void = { _ in }
+    /// The keyboard came to a pane that does not type: give it to the one
+    /// that does.
+    var onKeyboardMisplaced: () -> Void = {}
 
-    func makeUIView(context: Context) -> SessionTerminalView {
-        let view = existing ?? SessionTerminalView(session: session, settings: settings)
-        apply(to: view)
-        onReady(view)
-        return view
-    }
-
-    func updateUIView(_ view: SessionTerminalView, context: Context) {
-        apply(to: view)
-    }
-
-    private func apply(to view: SessionTerminalView) {
+    func apply(to view: SessionTerminalView) {
+        view.accessibilityIdentifier = accessibilityID
         view.isInputEnabled = isInputEnabled
         view.clipboardPolicy = clipboardPolicy
         view.onSendRefused = onSendRefused
         view.onPasteNeedsConfirmation = onPasteNeedsConfirmation
         view.onOpenLink = onOpenLink
         view.onTitle = onTitle
+        view.onFocus = onFocus
+        view.onCommand = onCommand
+        view.onKeyboardMisplaced = onKeyboardMisplaced
+        view.isFocusedPane = isFocused
+        // Focus moved here by a shortcut or the bar: the keyboard follows,
+        // if a terminal had it.
+        if isFocused, !view.isFirstResponder, SessionTerminalView.keyboardOwner != nil,
+           SessionTerminalView.keyboardOwner !== view {
+            DispatchQueue.main.async { view.restoreFirstResponder() }
+        }
+    }
+}
+
+/// A tab's terminals on screen (docs/ssh-design.md 8.2 and 16): their views
+/// laid out by the tab's pane tree, with a divider to drag between each
+/// pair, in one UIKit view.
+///
+/// One view for the whole tab rather than a SwiftUI view per pane: a
+/// terminal's view outlives any layout (it is the terminal's state), and
+/// SwiftUI would at times hold it in two places at once, or size a pane by
+/// the terminal's last size instead of the space it has.
+struct TerminalPaneLayout: UIViewRepresentable {
+    /// What is on screen: the tab's tree, or its focused pane alone.
+    let root: PaneNode
+    let focused: TerminalID
+    /// More than one pane: the one that types is outlined.
+    let showsFocus: Bool
+    /// The view for each terminal in `root`, configured for this update.
+    let views: [TerminalID: SessionTerminalView]
+    let setRatio: (Double, UUID) -> Void
+
+    func makeUIView(context: Context) -> PaneContainerView {
+        PaneContainerView()
     }
 
-    // No dismantleUIView: the view outlives this appearance. The workspace
-    // detaches it when the session closes.
+    func updateUIView(_ container: PaneContainerView, context: Context) {
+        container.update(root: root, focused: focused, showsFocus: showsFocus, views: views, setRatio: setRatio)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: PaneContainerView, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions(by: .zero)
+    }
+}
+
+final class PaneContainerView: UIView {
+    private var root: PaneNode?
+    private var focusedTerminal: TerminalID?
+    private var showsFocus = false
+    private var views: [TerminalID: SessionTerminalView] = [:]
+    private var setRatio: (Double, UUID) -> Void = { _, _ in }
+    private var dividers: [UUID: PaneDividerView] = [:]
+    private let focusRing = UIView()
+
+    init() {
+        super.init(frame: .zero)
+        clipsToBounds = true
+        focusRing.isUserInteractionEnabled = false
+        focusRing.layer.borderWidth = 2
+        focusRing.layer.borderColor = UIColor.tintColor.cgColor
+        focusRing.isAccessibilityElement = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func update(root: PaneNode, focused: TerminalID, showsFocus: Bool,
+                views: [TerminalID: SessionTerminalView], setRatio: @escaping (Double, UUID) -> Void) {
+        self.root = root
+        self.focusedTerminal = focused
+        self.showsFocus = showsFocus
+        self.views = views
+        self.setRatio = setRatio
+        setNeedsLayout()
+    }
+
+    /// Back on screen (another session's workspace may have held the
+    /// views meanwhile): take them again.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { setNeedsLayout() }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard window != nil, let root else { return }
+        var placed = Set<ObjectIdentifier>()
+        var usedDividers = Set<UUID>()
+        var focusFrame: CGRect?
+        func place(_ node: PaneNode, in rect: CGRect) {
+            switch node {
+            case .leaf(let id):
+                guard let view = views[id] else { return }
+                if view.superview !== self {
+                    let hadKeyboard = view.isFirstResponder
+                    insertSubview(view, at: 0)
+                    if hadKeyboard, !view.isFirstResponder { view.restoreFirstResponder() }
+                }
+                view.frame = rect
+                placed.insert(ObjectIdentifier(view))
+                if id == focusedTerminal { focusFrame = rect }
+            case .split(let split):
+                let horizontal = split.axis == .horizontal
+                let thickness = PaneDividerView.thickness
+                let length = horizontal ? rect.width : rect.height
+                let first = ((length - thickness) * split.ratio).rounded()
+                let firstRect: CGRect
+                let dividerRect: CGRect
+                let secondRect: CGRect
+                if horizontal {
+                    firstRect = CGRect(x: rect.minX, y: rect.minY, width: first, height: rect.height)
+                    dividerRect = CGRect(x: rect.minX + first, y: rect.minY, width: thickness, height: rect.height)
+                    secondRect = CGRect(x: dividerRect.maxX, y: rect.minY, width: max(0, rect.maxX - dividerRect.maxX), height: rect.height)
+                } else {
+                    firstRect = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: first)
+                    dividerRect = CGRect(x: rect.minX, y: rect.minY + first, width: rect.width, height: thickness)
+                    secondRect = CGRect(x: rect.minX, y: dividerRect.maxY, width: rect.width, height: max(0, rect.maxY - dividerRect.maxY))
+                }
+                let divider: PaneDividerView
+                if let existing = dividers[split.id] {
+                    divider = existing
+                } else {
+                    divider = PaneDividerView()
+                    dividers[split.id] = divider
+                    addSubview(divider)
+                }
+                let splitID = split.id
+                divider.configure(axis: split.axis, splitRect: rect) { [weak self] ratio in
+                    self?.setRatio(ratio, splitID)
+                }
+                divider.frame = dividerRect
+                usedDividers.insert(split.id)
+                place(split.first, in: firstRect)
+                place(split.second, in: secondRect)
+            }
+        }
+        place(root, in: bounds)
+        // Panes that left this tab, or a tab no longer shown.
+        for view in subviews where view is SessionTerminalView && !placed.contains(ObjectIdentifier(view)) {
+            view.removeFromSuperview()
+        }
+        for (id, divider) in dividers where !usedDividers.contains(id) {
+            divider.removeFromSuperview()
+            dividers[id] = nil
+        }
+        if showsFocus, let focusFrame {
+            if focusRing.superview == nil { addSubview(focusRing) }
+            bringSubviewToFront(focusRing)
+            focusRing.frame = focusFrame
+        } else {
+            focusRing.removeFromSuperview()
+        }
+    }
+}
+
+/// The line between two panes; dragged, it moves.
+final class PaneDividerView: UIView {
+    static let thickness: CGFloat = 6
+    private var axis = PaneAxis.horizontal
+    /// The split it divides, in its container.
+    private var splitRect = CGRect.zero
+    private var onRatio: (Double) -> Void = { _ in }
+
+    init() {
+        super.init(frame: .zero)
+        backgroundColor = UIColor(white: 0.3, alpha: 1)
+        isAccessibilityElement = true
+        accessibilityIdentifier = "terminal-pane-divider"
+        addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(dragged(_:))))
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func configure(axis: PaneAxis, splitRect: CGRect, onRatio: @escaping (Double) -> Void) {
+        self.axis = axis
+        self.splitRect = splitRect
+        self.onRatio = onRatio
+        accessibilityLabel = axis == .horizontal ? String(localized: "左右の仕切り") : String(localized: "上下の仕切り")
+    }
+
+    /// Easier to catch than it is thick.
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        bounds.insetBy(dx: axis == .horizontal ? -8 : 0, dy: axis == .vertical ? -8 : 0).contains(point)
+    }
+
+    @objc private func dragged(_ gesture: UIPanGestureRecognizer) {
+        guard let container = superview else { return }
+        let point = gesture.location(in: container)
+        let thickness = Self.thickness
+        let ratio = axis == .horizontal
+            ? (point.x - splitRect.minX - thickness / 2) / max(1, splitRect.width - thickness)
+            : (point.y - splitRect.minY - thickness / 2) / max(1, splitRect.height - thickness)
+        onRatio(Double(ratio))
+    }
 }
 
 final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDelegate {
     private let session: any TerminalSession
+    let channel: TerminalChannel
     private let settings: EffectiveSSHSettings
     /// User input: keys, the key bar, paste. The terminal's own replies to
     /// the remote program's queries are sent regardless.
@@ -63,6 +238,13 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
     var onPasteNeedsConfirmation: (String, @escaping () -> Void) -> Void = { _, proceed in proceed() }
     var onOpenLink: (URL) -> Void = { _ in }
     var onTitle: (String) -> Void = { _ in }
+    var onFocus: () -> Void = {}
+    var onCommand: (TerminalLayoutCommand) -> Void = { _ in }
+    var onKeyboardMisplaced: () -> Void = {}
+    /// Its pane is the one that types.
+    var isFocusedPane = true
+    /// The terminal with the keyboard, if any.
+    static weak var keyboardOwner: SessionTerminalView?
 
     private var draining = false
     /// True while output is fed in: what SwiftTerm sends then is a reply
@@ -81,8 +263,9 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
     private static let drainChunk = 64 * 1024
     private static let resizeDebounce = Duration.milliseconds(150)
 
-    init(session: any TerminalSession, settings: EffectiveSSHSettings) {
+    init(session: any TerminalSession, channel: TerminalChannel, settings: EffectiveSSHSettings) {
         self.session = session
+        self.channel = channel
         self.settings = settings
         self.fontSize = CGFloat(settings.fontSize)
         let options = TerminalOptions(
@@ -102,7 +285,7 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
         compositionLabel.isAccessibilityElement = false
         compositionLabel.accessibilityIdentifier = "terminal-composition"
         addSubview(compositionLabel)
-        session.terminalOutput.setReadableHandler { [weak self] in
+        channel.output.setReadableHandler { [weak self] in
             DispatchQueue.main.async { self?.drain() }
         }
     }
@@ -121,7 +304,7 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
     /// holds the view and would otherwise keep it alive.
     func detach() {
         detached = true
-        session.terminalOutput.setReadableHandler(nil)
+        channel.output.setReadableHandler(nil)
         resizeTask?.cancel()
         updateUiClosed()
     }
@@ -134,14 +317,14 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
         defer { draining = false }
         let started = Date()
         while Date().timeIntervalSince(started) < Self.drainBudget {
-            let bytes = session.terminalOutput.drain(maximum: Self.drainChunk)
+            let bytes = channel.output.drain(maximum: Self.drainChunk)
             if bytes.isEmpty { return }
             feeding = true
             feed(byteArray: bytes[...])
             feeding = false
         }
         // Over budget with output left: come back on the next turn.
-        if !session.terminalOutput.isEmpty {
+        if !channel.output.isEmpty {
             DispatchQueue.main.async { [weak self] in self?.drain() }
         }
     }
@@ -180,10 +363,34 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
     override var keyCommands: [UIKeyCommand]? {
         let bigger = UIKeyCommand(input: "=", modifierFlags: .command, action: #selector(makeFontBigger))
         bigger.wantsPriorityOverSystemBehavior = true
-        return (super.keyCommands ?? []) + [bigger]
+        return (super.keyCommands ?? []) + [bigger] + Self.layoutKeyCommands
     }
 
     @objc private func makeFontBigger() { adjustFontSize(by: 1) }
+
+    /// Tabs and panes, as Terminal.app and iTerm2 have them.
+    private static let layoutKeyCommands: [UIKeyCommand] = [
+        UIKeyCommand(title: String(localized: "新しいタブ"), action: #selector(layoutNewTab), input: "t", modifierFlags: .command),
+        UIKeyCommand(title: String(localized: "左右に分割"), action: #selector(layoutSplitHorizontal), input: "d", modifierFlags: .command),
+        UIKeyCommand(title: String(localized: "上下に分割"), action: #selector(layoutSplitVertical), input: "d", modifierFlags: [.command, .shift]),
+        UIKeyCommand(title: String(localized: "ペインを閉じる"), action: #selector(layoutClosePane), input: "w", modifierFlags: .command),
+        UIKeyCommand(title: String(localized: "次のタブ"), action: #selector(layoutNextTab), input: "]", modifierFlags: [.command, .shift]),
+        UIKeyCommand(title: String(localized: "前のタブ"), action: #selector(layoutPreviousTab), input: "[", modifierFlags: [.command, .shift]),
+        UIKeyCommand(title: String(localized: "次のペイン"), action: #selector(layoutNextPane), input: "]", modifierFlags: .command),
+        UIKeyCommand(title: String(localized: "前のペイン"), action: #selector(layoutPreviousPane), input: "[", modifierFlags: .command),
+    ].map { command in
+        command.wantsPriorityOverSystemBehavior = true
+        return command
+    }
+
+    @objc private func layoutNewTab() { onCommand(.newTab) }
+    @objc private func layoutSplitHorizontal() { onCommand(.splitHorizontal) }
+    @objc private func layoutSplitVertical() { onCommand(.splitVertical) }
+    @objc private func layoutClosePane() { onCommand(.closePane) }
+    @objc private func layoutNextTab() { onCommand(.nextTab) }
+    @objc private func layoutPreviousTab() { onCommand(.previousTab) }
+    @objc private func layoutNextPane() { onCommand(.nextPane) }
+    @objc private func layoutPreviousPane() { onCommand(.previousPane) }
 
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {
         super.traitCollectionDidChange(previous)
@@ -258,7 +465,7 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
     @discardableResult
     private func sendToSession(_ data: ArraySlice<UInt8>, fromUser: Bool = true) -> Bool {
         guard isInputEnabled || !fromUser else { return false }
-        if !session.terminalInput.send(Array(data)) {
+        if !channel.input.send(Array(data)) {
             onSendRefused()
             return false
         }
@@ -302,7 +509,7 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
                 let end = min(offset + 4096, bytes.count)
                 guard self.sendToSession(bytes[offset..<end]) else {
                     if bracketed, offset > 0 {
-                        _ = self.session.terminalInput.send(Array("\u{1B}[201~".utf8))
+                        _ = self.channel.input.send(Array("\u{1B}[201~".utf8))
                     }
                     return
                 }
@@ -360,6 +567,7 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
     @discardableResult
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
+        if resigned, Self.keyboardOwner === self { Self.keyboardOwner = nil }
         updateComposition()
         return resigned
     }
@@ -407,16 +615,58 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
         sendToSession(data, fromUser: !feeding)
     }
 
+    /// The size it has now, in cells, as the shell was told.
+    var terminalSize: TerminalSize {
+        let terminal = getTerminal()
+        return TerminalSize(
+            columns: terminal.cols, rows: terminal.rows,
+            pixelWidth: Int(bounds.width * contentScaleFactor),
+            pixelHeight: Int(bounds.height * contentScaleFactor))
+    }
+
+    @discardableResult
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became {
+            Self.keyboardOwner = self
+            // UIKit gives the keyboard back to whoever had it when a sheet
+            // closes: if that is not the pane that types now, it goes on.
+            if !isFocusedPane, !restoring {
+                DispatchQueue.main.async { [weak self] in self?.onKeyboardMisplaced() }
+            }
+        }
+        return became
+    }
+
+    /// A touch chooses the pane, whatever the gesture turns out to be.
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if !isFocusedPane {
+            isFocusedPane = true
+            onFocus()
+        }
+        super.touchesBegan(touches, with: event)
+    }
+
+    private var restoring = false
+
+    /// The keyboard back after a move between holders: not the user
+    /// choosing this pane, so focus stays where it is.
+    func restoreFirstResponder() {
+        restoring = true
+        becomeFirstResponder()
+        restoring = false
+    }
+
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
         let size = TerminalSize(
             columns: newCols, rows: newRows,
             pixelWidth: Int(bounds.width * contentScaleFactor),
             pixelHeight: Int(bounds.height * contentScaleFactor))
         resizeTask?.cancel()
-        resizeTask = Task { [session] in
+        resizeTask = Task { [session, id = channel.id] in
             try? await Task.sleep(for: Self.resizeDebounce)
             guard !Task.isCancelled else { return }
-            await session.resizeTerminal(size)
+            await session.resizeTerminal(id, to: size)
         }
     }
 

@@ -10,7 +10,12 @@ final class LiveSSHUITests: XCTestCase {
     private let environment = ProcessInfo.processInfo.environment
 
     private func element(_ identifier: String) -> XCUIElement {
-        app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+        let matches = app.descendants(matching: .any).matching(identifier: identifier)
+        // A view on its way out of the hierarchy can linger with no frame.
+        if matches.count > 1, let shown = matches.allElementsBoundByIndex.first(where: { $0.frame.width > 0 }) {
+            return shown
+        }
+        return matches.firstMatch
     }
 
     private func shot(_ name: String) {
@@ -36,6 +41,130 @@ final class LiveSSHUITests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.3)
         }
         return false
+    }
+
+    private func launchAndConnect(arguments: [String] = []) throws {
+        let environment = self.environment
+        guard let port = environment["MREMOTE_UITEST_SSH_PORT"],
+              let user = environment["MREMOTE_UITEST_SSH_USER"],
+              let key = environment["MREMOTE_UITEST_SSH_KEY"] else {
+            throw XCTSkip("no test sshd (bridge/ssh/tests/run_live_ui_tests.sh)")
+        }
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments.append("-mremote-ui-testing")
+        app.launchArguments += arguments
+        app.launchEnvironment["MREMOTE_UITEST_SSH_PORT"] = port
+        app.launchEnvironment["MREMOTE_UITEST_SSH_USER"] = user
+        app.launchEnvironment["MREMOTE_UITEST_SSH_KEY"] = key
+        app.launchEnvironment["MREMOTE_UITEST_SSH_STARTUP"] = "echo welcome-$((40+2))"
+        app.launch()
+        let row = element("profile-row-テスト SSH")
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        let trust = element("host-key-trust-always")
+        if trust.waitForExistence(timeout: 5) { trust.tap() }
+        XCTAssertTrue(element("terminal-surface").waitForExistence(timeout: 15))
+        // The shell is up: typing before it would go nowhere.
+        let up = waitForTerminal(containing: "welcome-42")
+        if !up { shot("connect-failed") }
+        XCTAssertTrue(waitForTerminal(containing: "welcome-42"), "the startup command ran\n\(terminalText())")
+    }
+
+    /// Opens the session menu and picks one of its tab and pane items.
+    private func menu(_ item: String) {
+        let menuButton = element("session-menu-button")
+        XCTAssertTrue(menuButton.waitForExistence(timeout: 5))
+        menuButton.tap()
+        let entry = element(item)
+        for _ in 0..<6 where !entry.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(entry.waitForExistence(timeout: 5), "\(item) in the menu\n\(app.debugDescription)")
+        entry.tap()
+    }
+
+    /// Tabs and panes on one connection (docs/ssh-design.md section 16):
+    /// each its own shell, switched from the bar, and closed again.
+    func testTabsAndPanesShareTheConnection() throws {
+        try launchAndConnect()
+        let terminal = element("terminal-surface")
+        terminal.tap()
+        app.typeText("echo first-$((1+1))\n")
+        XCTAssertTrue(waitForTerminal(containing: "first-2"))
+
+        menu("terminal-new-tab")
+        let bar = element("terminal-tab-bar")
+        XCTAssertTrue(bar.waitForExistence(timeout: 10), "a second tab brings the bar")
+        XCTAssertTrue(element("terminal-tab-1").waitForExistence(timeout: 5))
+        element("terminal-surface").tap()
+        app.typeText("echo second-$((2+2))\n")
+        XCTAssertTrue(waitForTerminal(containing: "second-4"), "the new tab is a shell\n\(terminalText())")
+        XCTAssertFalse(terminalText().contains("first-2"), "the new tab has its own screen")
+        shot("t1-second-tab")
+
+        element("terminal-tab-0").tap()
+        XCTAssertTrue(waitForTerminal(containing: "first-2"), "back on the first tab")
+        XCTAssertFalse(terminalText().contains("second-4"))
+
+        // A pane beside it. A narrow screen shows one at a time, with
+        // numbers in the bar; a wide one shows both.
+        menu("terminal-split-horizontal")
+        let chip = element("terminal-pane-chip-1")
+        let narrow = chip.waitForExistence(timeout: 5)
+        element("terminal-surface").tap()
+        app.typeText("echo pane-$((3+3))\n")
+        XCTAssertTrue(waitForTerminal(containing: "pane-6"), "the pane is a shell\n\(terminalText())")
+        shot("t2-pane")
+        if narrow {
+            element("terminal-pane-chip-0").tap()
+            XCTAssertTrue(waitForTerminal(containing: "first-2"), "the first pane again")
+        } else {
+            XCTAssertTrue(element("terminal-pane").exists, "both panes on a wide screen")
+        }
+
+        menu("terminal-close-pane")
+        XCTAssertTrue(chip.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(element("terminal-pane").exists, "one pane left")
+
+        // Closing the first tab leaves the second, and the bar goes with it.
+        element("terminal-tab-close").tap()
+        XCTAssertTrue(bar.waitForNonExistence(timeout: 10), "one tab: no bar")
+        XCTAssertTrue(waitForTerminal(containing: "second-4"), "the second tab is what is left\n\(terminalText())")
+        shot("t3-one-tab")
+        element("terminal-surface").tap()
+        app.typeText("exit\n")
+        XCTAssertTrue(element("session-end-reason").waitForExistence(timeout: 15), "its exit ends the session")
+    }
+
+    /// Wide enough for splits (the threshold lowered, as no iPad runs this
+    /// simulator runtime): both panes on screen, the divider dragged, a tap
+    /// moving the keyboard.
+    func testPanesSideBySide() throws {
+        try launchAndConnect(arguments: ["-mremote-terminal-split-width", "300"])
+        element("terminal-surface").tap()
+        app.typeText("echo left-$((1+1))\n")
+        XCTAssertTrue(waitForTerminal(containing: "left-2"))
+        menu("terminal-split-horizontal")
+        let other = element("terminal-pane")
+        XCTAssertTrue(other.waitForExistence(timeout: 10), "both panes on screen\n\(app.debugDescription)")
+        let right = element("terminal-surface")
+        XCTAssertGreaterThan(right.frame.minX, other.frame.minX, "the new pane is on the right")
+        right.tap()
+        app.typeText("echo right-$((2+2))\n")
+        XCTAssertTrue(waitForTerminal(containing: "right-4"))
+        let before = other.frame.width
+        let divider = element("terminal-pane-divider")
+        divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1, thenDragTo: divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).withOffset(CGVector(dx: 60, dy: 0)))
+        XCTAssertGreaterThan(element("terminal-pane").frame.width, before + 20, "the divider moved")
+        shot("p1-side-by-side")
+        // A tap on the left pane gives it the keyboard.
+        element("terminal-pane").tap()
+        app.typeText("echo again-$((3+3))\n")
+        XCTAssertTrue(waitForTerminal(containing: "again-6"), "the left pane types now\n\(terminalText())")
+        XCTAssertTrue(terminalText().contains("left-2"), "it is the left pane's screen")
+        shot("p2-focus-left")
     }
 
     func testConnectTrustTypeAndUseTheMenu() throws {

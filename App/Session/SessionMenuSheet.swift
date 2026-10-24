@@ -497,6 +497,9 @@ extension SessionMenuSheet {
                 .disabled(!model.state.acceptsInput || !model.clipboardPolicy.allowsSend)
                 .accessibilityIdentifier("session-terminal-paste")
             }
+            Section("タブとペイン") {
+                TerminalLayoutMenuItems(model: model, before: { dismiss() })
+            }
             Section("表示") {
                 HStack {
                     Text("文字の大きさ")

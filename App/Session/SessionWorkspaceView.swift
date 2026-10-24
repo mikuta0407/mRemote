@@ -439,21 +439,15 @@ struct SessionWorkspaceView: View {
     @ViewBuilder
     private func desktop(touchMode: TouchPointerMode, renderSizeOverride: CGSize?) -> some View {
         if let terminal = model.terminal, let settings = model.configuration.ssh {
-            // An SSH session draws a terminal instead (docs/ssh-design.md 8.2).
-            TerminalSurface(
-                session: terminal,
+            // An SSH session draws terminals instead: tabs and panes
+            // (docs/ssh-design.md 8.2 and 16).
+            TerminalPanesView(
+                model: model,
+                terminal: terminal,
                 settings: settings,
-                isInputEnabled: model.acceptsInput && scenePhase == .active,
-                clipboardPolicy: model.clipboardPolicy,
-                existing: model.terminalView,
-                onSendRefused: { model.terminalSendRefused() },
-                onPasteNeedsConfirmation: { text, proceed in model.confirmPaste(text, proceed: proceed) },
-                onOpenLink: { url in model.pendingLink = url },
-                onTitle: { title in model.terminalTitle = title },
-                onReady: { view in model.terminalView = view }
+                isInputEnabled: model.acceptsInput && scenePhase == .active
             )
             .opacity(model.showsTerminal ? 1 : 0)
-            .accessibilityIdentifier("terminal-surface")
             .alert("複数行を貼り付けますか？", isPresented: pasteAlertBinding) {
                 Button("貼り付ける") { model.resolvePaste(confirmed: true) }
                     .accessibilityIdentifier("paste-confirm")
