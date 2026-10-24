@@ -19,7 +19,9 @@ final class LiveSSHUITests: XCTestCase {
     }
 
     private func shot(_ name: String) {
-        let screenshot = XCUIScreen.main.screenshot()
+        // The app's window rather than the main screen: on the iPhone Duo
+        // open, the main screen is the cover display, dark.
+        let screenshot = app.windows.firstMatch.screenshot()
         let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
         attachment.lifetime = .keepAlways
@@ -76,12 +78,26 @@ final class LiveSSHUITests: XCTestCase {
         let menuButton = element("session-menu-button")
         XCTAssertTrue(menuButton.waitForExistence(timeout: 5))
         menuButton.tap()
-        let entry = element(item)
-        for _ in 0..<6 where !entry.isHittable {
-            app.swipeUp()
-        }
-        XCTAssertTrue(entry.waitForExistence(timeout: 5), "\(item) in the menu\n\(app.debugDescription)")
+        let entry = menuEntry(item)
+        if !entry.exists { shot("menu-without-\(item)") }
+        XCTAssertTrue(entry.exists, "\(item) in the menu\n\(app.debugDescription)")
         entry.tap()
+    }
+
+    /// An item of the open session menu, scrolled to. On a short sheet (the
+    /// Duo open) the list can be carried past it, and rows out of sight are
+    /// not there at all: back up again.
+    private func menuEntry(_ item: String) -> XCUIElement {
+        let entry = element(item)
+        let sheet = element("session-menu")
+        _ = sheet.waitForExistence(timeout: 5)
+        for _ in 0..<6 where !(entry.exists && entry.isHittable) {
+            sheet.swipeUp(velocity: .slow)
+        }
+        for _ in 0..<6 where !(entry.exists && entry.isHittable) {
+            sheet.swipeDown(velocity: .slow)
+        }
+        return entry
     }
 
     /// Tabs and panes on one connection (docs/ssh-design.md section 16):
@@ -137,11 +153,10 @@ final class LiveSSHUITests: XCTestCase {
         XCTAssertTrue(element("session-end-reason").waitForExistence(timeout: 15), "its exit ends the session")
     }
 
-    /// Wide enough for splits (the threshold lowered, as no iPad runs this
-    /// simulator runtime): both panes on screen, the divider dragged, a tap
-    /// moving the keyboard.
+    /// Splits shown whatever the room (no iPad runs this simulator runtime):
+    /// both panes on screen, the divider dragged, a tap moving the keyboard.
     func testPanesSideBySide() throws {
-        try launchAndConnect(arguments: ["-mremote-terminal-split-width", "300"])
+        try launchAndConnect(arguments: ["-mremote-terminal-splits", "always"])
         element("terminal-surface").tap()
         app.typeText("echo left-$((1+1))\n")
         XCTAssertTrue(waitForTerminal(containing: "left-2"))
@@ -165,6 +180,43 @@ final class LiveSSHUITests: XCTestCase {
         XCTAssertTrue(waitForTerminal(containing: "again-6"), "the left pane types now\n\(terminalText())")
         XCTAssertTrue(terminalText().contains("left-2"), "it is the left pane's screen")
         shot("p2-focus-left")
+    }
+
+    /// The iPhone Duo as it comes, splits shown where each pane gets room.
+    /// Closed (466pt across): one above the other, not side by side. Open
+    /// (951pt across): side by side too.
+    func testPanesOnTheDuo() throws {
+        try launchAndConnect()
+        let width = app.windows.firstMatch.frame.width
+        let closed = (440...520).contains(width)
+        let open = (900...1000).contains(width)
+        try XCTSkipUnless(closed || open, "not an iPhone Duo (\(width)pt)")
+        let other = element("terminal-pane")
+        element("terminal-surface").tap()
+        if closed {
+            menu("terminal-split-vertical")
+            XCTAssertTrue(other.waitForExistence(timeout: 10), "one above the other fits\n\(app.debugDescription)")
+            XCTAssertLessThan(other.frame.minY, element("terminal-surface").frame.minY, "the new pane is below")
+            shot("d1-closed-stacked")
+            menu("terminal-split-horizontal")
+            XCTAssertTrue(element("terminal-pane-chip-2").waitForExistence(timeout: 10), "three panes to choose from")
+            XCTAssertFalse(other.exists, "side by side does not fit: one pane at a time")
+            shot("d2-closed-one-at-a-time")
+        } else {
+            menu("terminal-split-horizontal")
+            XCTAssertTrue(other.waitForExistence(timeout: 10), "side by side fits\n\(app.debugDescription)")
+            XCTAssertGreaterThan(element("terminal-surface").frame.minX, other.frame.minX, "the new pane is on the right")
+            app.typeText("echo open-$((5+5))\n")
+            XCTAssertTrue(waitForTerminal(containing: "open-10"))
+            shot("d1-open-side-by-side")
+            menu("terminal-split-vertical")
+            // Even with the keyboard up, the right half has room for two
+            // above one another.
+            let panes = app.descendants(matching: .any).matching(identifier: "terminal-pane")
+            XCTAssertEqual(panes.allElementsBoundByIndex.filter { $0.frame.width > 0 }.count, 2, "all three on screen")
+            XCTAssertFalse(element("terminal-pane-chip-2").exists, "nothing to choose between")
+            shot("d2-open-three")
+        }
     }
 
     private func value(of identifier: String) -> String {
@@ -338,10 +390,10 @@ final class LiveSSHUITests: XCTestCase {
         let menuButton = element("session-menu-button")
         if menuButton.waitForExistence(timeout: 3) {
             menuButton.tap()
-            XCTAssertTrue(element("session-terminal-paste").waitForExistence(timeout: 5))
+            XCTAssertTrue(menuEntry("session-terminal-paste").exists)
             shot("5-menu")
             // To the list and back: the same terminal, with what it showed.
-            element("session-return-to-list").tap()
+            menuEntry("session-return-to-list").tap()
             let running = element("running-session-テスト SSH")
             XCTAssertTrue(running.waitForExistence(timeout: 10))
             running.tap()

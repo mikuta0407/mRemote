@@ -53,6 +53,31 @@ indirect enum PaneNode: Hashable {
         }
     }
 
+    /// Whether each pane gets at least `columns` by `rows` cells of `size`,
+    /// every split sharing evenly: where the dividers are dragged to is the
+    /// user's own doing, and does not fold the panes away mid-drag.
+    func fits(_ size: CGSize, cell: CGSize, divider: CGFloat,
+              columns: Int = PaneNode.minimumColumns, rows: Int = PaneNode.minimumRows) -> Bool {
+        switch self {
+        case .leaf:
+            return Int(size.width / cell.width) >= columns && Int(size.height / cell.height) >= rows
+        case .split(let split):
+            var half = size
+            if split.axis == .horizontal {
+                half.width = (size.width - divider) / 2
+            } else {
+                half.height = (size.height - divider) / 2
+            }
+            return split.first.fits(half, cell: cell, divider: divider, columns: columns, rows: rows)
+                && split.second.fits(half, cell: cell, divider: divider, columns: columns, rows: rows)
+        }
+    }
+
+    /// The least a pane shown beside others is worth: a usable command line,
+    /// and a few lines of what it printed.
+    static let minimumColumns = 40
+    static let minimumRows = 8
+
     func settingRatio(_ ratio: Double, of splitID: UUID) -> PaneNode {
         guard case .split(var split) = self else { return self }
         if split.id == splitID {

@@ -3,8 +3,8 @@ import SessionCore
 
 /// An SSH session's terminals on screen (docs/ssh-design.md section 16): a
 /// bar of tabs - this host's, and the other SSH sessions' - over the tab on
-/// screen, split into panes. On a narrow screen a tab shows one pane at a
-/// time, chosen in the bar.
+/// screen, split into panes. Where the panes would not each get room
+/// enough, a tab shows one at a time, chosen in the bar.
 struct TerminalPanesView: View {
     let model: SessionWorkspaceModel
     let terminal: any TerminalSession
@@ -12,14 +12,22 @@ struct TerminalPanesView: View {
     let isInputEnabled: Bool
     @Environment(AppEnvironment.self) private var environment
 
-    /// Below this a tab shows its focused pane only. UI tests lower it with
-    /// `-mremote-terminal-split-width`, to see splits on a phone.
-    static var splitWidth: CGFloat {
+    /// Whether a tab's panes go on screen together: when each gets enough
+    /// cells (`PaneNode.fits`), else the focused one alone. UI tests can
+    /// force either with `-mremote-terminal-splits always|never`.
+    private func showsSplits(_ root: PaneNode, in size: CGSize) -> Bool {
         #if DEBUG
-        let override = UserDefaults.standard.double(forKey: "mremote-terminal-split-width")
-        if override > 0 { return override }
+        switch UserDefaults.standard.string(forKey: "mremote-terminal-splits") {
+        case "always": return true
+        case "never": return false
+        default: break
+        }
         #endif
-        return 600
+        // The bar takes its height off once there is more than one pane.
+        var room = size
+        room.height -= TerminalTabBar.height
+        return root.fits(room, cell: TmuxCell.size(fontSize: CGFloat(settings.fontSize)),
+                         divider: PaneDividerView.thickness)
     }
 
     var body: some View {
@@ -46,7 +54,7 @@ struct TerminalPanesView: View {
 
     private var panes: some View {
         GeometryReader { proxy in
-            let showsSplits = proxy.size.width >= Self.splitWidth
+            let showsSplits = model.terminalTabs.selected.map { showsSplits($0.root, in: proxy.size) } ?? false
             VStack(spacing: 0) {
                 if showsBar(showsSplits: showsSplits) {
                     TerminalTabBar(model: model, showsPaneChips: !showsSplits)
@@ -109,6 +117,7 @@ struct TerminalTabBar: View {
     let model: SessionWorkspaceModel
     /// On a narrow screen: the tab on screen's panes, to switch between.
     let showsPaneChips: Bool
+    static let height: CGFloat = 34
     @Environment(AppEnvironment.self) private var environment
 
     var body: some View {
@@ -131,7 +140,7 @@ struct TerminalTabBar: View {
             }
             addMenu
         }
-        .frame(height: 34)
+        .frame(height: Self.height)
         .background(Color(white: 0.12))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("terminal-tab-bar")
