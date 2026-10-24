@@ -91,11 +91,21 @@ final class LiveSSHUITests: XCTestCase {
         let entry = element(item)
         let sheet = element("session-menu")
         _ = sheet.waitForExistence(timeout: 5)
-        for _ in 0..<6 where !(entry.exists && entry.isHittable) {
-            sheet.swipeUp(velocity: .slow)
+        if !sheet.exists { shot("menu-not-open") }
+        // Dragged between points of the sheet rather than swiped: with the
+        // Duo open turned upright by hand, XCTest's swipes go the wrong way
+        // round, and a sheet swiped down goes away. Up on the sheet, which
+        // first grows to full height; down on the list inside only.
+        func drag(_ element: XCUIElement, from: CGFloat, to: CGFloat) {
+            element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: from))
+                .press(forDuration: 0.05, thenDragTo: element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: to)))
         }
-        for _ in 0..<6 where !(entry.exists && entry.isHittable) {
-            sheet.swipeDown(velocity: .slow)
+        for _ in 0..<6 where sheet.exists && !(entry.exists && entry.isHittable) {
+            drag(sheet, from: 0.8, to: 0.3)
+        }
+        let list = sheet.descendants(matching: .collectionView).firstMatch
+        for _ in 0..<6 where list.exists && !(entry.exists && entry.isHittable) {
+            drag(list, from: 0.4, to: 0.8)
         }
         return entry
     }
@@ -182,15 +192,15 @@ final class LiveSSHUITests: XCTestCase {
         shot("p2-focus-left")
     }
 
-    /// The iPhone Duo as it comes, splits shown where each pane gets room.
-    /// Closed (466pt across): one above the other, not side by side. Open
-    /// (951pt across): side by side too.
+    /// The iPhone Duo as it is held, splits shown where each pane gets room.
+    /// Closed and upright (466pt across): one above the other, not side by
+    /// side. Open, either way round (951 or 669pt across): side by side too.
     func testPanesOnTheDuo() throws {
         try launchAndConnect()
         let width = app.windows.firstMatch.frame.width
         let closed = (440...520).contains(width)
-        let open = (900...1000).contains(width)
-        try XCTSkipUnless(closed || open, "not an iPhone Duo (\(width)pt)")
+        let open = (900...1000).contains(width) || (640...700).contains(width) && app.windows.firstMatch.frame.height > 900
+        try XCTSkipUnless(closed || open, "not an iPhone Duo held this way (\(app.windows.firstMatch.frame.size))")
         let other = element("terminal-pane")
         element("terminal-surface").tap()
         if closed {
@@ -374,8 +384,11 @@ final class LiveSSHUITests: XCTestCase {
         XCTAssertTrue(waitForTerminal(containing: "^[[6;5~"), "Ctrl+PgDn is sent\n\(terminalText())")
         // F5 is past the screen's edge until the bar is scrolled.
         let f5 = element("terminal-key-F5")
+        // Dragged rather than swiped, as in menuEntry; from a key on screen
+        // however wide the screen.
         for _ in 0..<4 where !f5.isHittable {
-            element("terminal-key-Del").swipeLeft()
+            let start = element("terminal-key-PgUp").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -250, dy: 0)))
         }
         f5.tap()
         XCTAssertTrue(waitForTerminal(containing: "^[[15~"), "F5 is sent\n\(terminalText())")

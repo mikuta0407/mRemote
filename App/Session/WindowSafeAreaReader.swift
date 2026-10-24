@@ -108,7 +108,11 @@ struct KeyboardInsetReader: UIViewRepresentable {
             guard let window else { return }
             // With the keyboard down the guide is the bottom safe area, which
             // the workspace already knows; only the keyboard is reported.
-            let guideHeight = window.bounds.maxY - marker.convert(marker.bounds, to: window).maxY
+            // Its height, not where it starts: on the iPhone Duo open and
+            // upright the guide sits as far above the window's bottom edge
+            // as the top safe area is deep (iOS 27.1), and the terminal
+            // stopped that far short of the keyboard.
+            let guideHeight = keyboardLayoutGuide.layoutFrame.height
             let inset = guideHeight > window.safeAreaInsets.bottom + 1 ? guideHeight : 0
             guard inset != reported else { return }
             reported = inset
