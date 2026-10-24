@@ -146,5 +146,15 @@ final class LiveSSHUITests: XCTestCase {
         app.typeText("exit\n")
         XCTAssertTrue(element("session-end-reason").waitForExistence(timeout: 15), "the shell's exit is shown")
         shot("6-exited")
+
+        // Reconnect from the banner: a new shell, which runs the startup
+        // command again.
+        let reconnect = element("session-end-reconnect")
+        XCTAssertTrue(reconnect.waitForExistence(timeout: 5), "the banner offers to reconnect\n\(app.debugDescription)")
+        XCTAssertTrue(reconnect.isHittable, "the reconnect button can be pressed\n\(app.debugDescription)")
+        reconnect.tap()
+        XCTAssertTrue(waitForTerminal(containing: "Last login", timeout: 15) && element("session-end-reason").waitForNonExistence(timeout: 15),
+                      "the session comes back\n\(app.debugDescription)")
+        shot("7-reconnected")
     }
 }

@@ -382,7 +382,13 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
                         domain: pending.domain, password: pending.password)
                 }
             }
-            if state == .failed || state == .disconnected { credentialToSaveOnConnect = nil }
+            if state == .failed || state == .disconnected {
+                credentialToSaveOnConnect = nil
+                // Nothing takes typing now, and the keyboard would cover the
+                // banner's reconnect button.
+                terminalView?.resignFirstResponder()
+                softwareKeyboard.hide()
+            }
             if state == .connected {
                 lastError = nil
                 hadConnected = true
