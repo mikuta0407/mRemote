@@ -78,6 +78,46 @@ typedef struct {
     size_t kbd_count;
 } challenge_answer;
 
+/* One shell or command on the connection (ABI 4). Channel 0 is the first
+ * shell. Created by the caller's thread, freed by the run thread once it has
+ * reported the channel's end, or by destroy. */
+typedef enum {
+    PHASE_PENDING = 0,   /* queued; the run thread opens it once signed in */
+    PHASE_OPEN,
+    PHASE_DONE           /* its end reported; the run thread frees it */
+} channel_phase;
+
+typedef struct {
+    uint32_t id;
+    mr_ssh_channel_kind kind;
+    char *command;
+
+    /* Under the session's lock. */
+    channel_phase phase;
+    int close_requested;
+    uint8_t *input;
+    size_t input_length;
+    size_t input_capacity;
+    int resize_pending;
+    uint16_t columns, rows, pixel_width, pixel_height;
+    int resume_requested;
+
+    /* Run thread only. */
+    LIBSSH2_CHANNEL *channel;
+    uint8_t *held_output;
+    size_t held_length;
+    size_t held_offset;
+    int paused;
+    /* The size of a resize libssh2 has begun to send: once it says EAGAIN it
+     * finishes that packet, whatever size the next call asks for. */
+    int resize_in_flight;
+    uint16_t sent_columns, sent_rows, sent_pw, sent_ph;
+    /* Set when this round's write could not go on: the window or the send
+     * queue is full. */
+    int want_write;
+    int resize_blocked;
+} term_channel;
+
 struct mr_ssh_session {
     pthread_mutex_t lock;
     pthread_cond_t cond;
@@ -108,20 +148,18 @@ struct mr_ssh_session {
     challenge_kind pending_kind;
     size_t pending_kbd_count;
     challenge_answer answer;
-    uint8_t *input;
-    size_t input_length;
-    size_t input_capacity;
-    int resize_pending;
-    uint16_t columns, rows, pixel_width, pixel_height;
-    int resume_requested;
+    /* ABI 4. Open, pending and ending channels; slots past channel_count are
+     * NULL. The slot array changes under the lock, by the caller's thread
+     * (open) and the run thread (free). */
+    term_channel *channels[MR_SSH_MAX_CHANNELS];
+    size_t channel_count;
+    uint32_t next_channel_id;
 
     /* Run thread only. */
     int socket_fd;
     LIBSSH2_SESSION *ssh;
-    LIBSSH2_CHANNEL *channel;
-    uint8_t *held_output;
-    size_t held_length;
-    size_t held_offset;
+    /* A shell has been asked for: the session ends with its last shell. */
+    int had_shell;
     int kbd_cancelled;
     /* The keyboard-interactive call's deadline, restarted after each round
      * the user answers: their think time does not count against it. */
@@ -461,7 +499,50 @@ mr_ssh_status mr_ssh_session_cancel_challenge(mr_ssh_session *s, uint64_t challe
 
 /* ---- thread-safe controls ---------------------------------------------- */
 
-mr_ssh_status mr_ssh_session_write(mr_ssh_session *s, const uint8_t *bytes, size_t length) {
+/* Under the lock. A channel that has ended is gone for the caller. */
+static term_channel *find_channel(mr_ssh_session *s, uint32_t id) {
+    for (size_t i = 0; i < s->channel_count; i++) {
+        term_channel *c = s->channels[i];
+        if (c->id == id && c->phase != PHASE_DONE) return c;
+    }
+    return NULL;
+}
+
+static int valid_size(uint16_t columns, uint16_t rows) {
+    return columns >= MR_SSH_MIN_TERMINAL_DIMENSION && rows >= MR_SSH_MIN_TERMINAL_DIMENSION &&
+           columns <= MR_SSH_MAX_TERMINAL_DIMENSION && rows <= MR_SSH_MAX_TERMINAL_DIMENSION;
+}
+
+static term_channel *channel_new(uint32_t id, mr_ssh_channel_kind kind, const char *command,
+                                 uint16_t columns, uint16_t rows, uint16_t pw, uint16_t ph) {
+    term_channel *c = calloc(1, sizeof *c);
+    if (!c) return NULL;
+    c->id = id;
+    c->kind = kind;
+    if (command) {
+        c->command = copy_string(command, MR_SSH_MAX_COMMAND_BYTES);
+        if (!c->command) {
+            free(c);
+            return NULL;
+        }
+    }
+    c->columns = columns;
+    c->rows = rows;
+    c->pixel_width = pw;
+    c->pixel_height = ph;
+    return c;
+}
+
+/* Its libssh2 channel is freed by then. */
+static void channel_free(term_channel *c) {
+    if (!c) return;
+    wipe_free(c->input, c->input_capacity);
+    if (c->held_output) wipe_free(c->held_output, READ_CHUNK);
+    free(c->command);
+    free(c);
+}
+
+static mr_ssh_status channel_write(mr_ssh_session *s, uint32_t id, const uint8_t *bytes, size_t length) {
     if (!s || (length && !bytes)) return MR_SSH_ERROR_INVALID_ARGUMENT;
     if (length == 0) return MR_SSH_STATUS_OK;
     pthread_mutex_lock(&s->lock);
@@ -469,13 +550,18 @@ mr_ssh_status mr_ssh_session_write(mr_ssh_session *s, const uint8_t *bytes, size
         pthread_mutex_unlock(&s->lock);
         return MR_SSH_ERROR_STOPPED;
     }
-    if (length > MR_SSH_MAX_INPUT_QUEUE_BYTES - s->input_length) {
+    term_channel *c = find_channel(s, id);
+    if (!c || c->close_requested) {
+        pthread_mutex_unlock(&s->lock);
+        return id == 0 ? MR_SSH_ERROR_STOPPED : MR_SSH_ERROR_INVALID_ARGUMENT;
+    }
+    if (length > MR_SSH_MAX_INPUT_QUEUE_BYTES - c->input_length) {
         pthread_mutex_unlock(&s->lock);
         return MR_SSH_ERROR_QUEUE_FULL;
     }
-    size_t needed = s->input_length + length;
-    if (needed > s->input_capacity) {
-        size_t capacity = s->input_capacity ? s->input_capacity : 4096;
+    size_t needed = c->input_length + length;
+    if (needed > c->input_capacity) {
+        size_t capacity = c->input_capacity ? c->input_capacity : 4096;
         while (capacity < needed) capacity *= 2;
         if (capacity > MR_SSH_MAX_INPUT_QUEUE_BYTES) capacity = MR_SSH_MAX_INPUT_QUEUE_BYTES;
         uint8_t *grown = malloc(capacity);
@@ -484,40 +570,118 @@ mr_ssh_status mr_ssh_session_write(mr_ssh_session *s, const uint8_t *bytes, size
             return MR_SSH_ERROR_OUT_OF_MEMORY;
         }
         /* Not realloc: the old buffer held keystrokes, and is wiped. */
-        if (s->input_length) memcpy(grown, s->input, s->input_length);
-        wipe_free(s->input, s->input_capacity);
-        s->input = grown;
-        s->input_capacity = capacity;
+        if (c->input_length) memcpy(grown, c->input, c->input_length);
+        wipe_free(c->input, c->input_capacity);
+        c->input = grown;
+        c->input_capacity = capacity;
     }
-    memcpy(s->input + s->input_length, bytes, length);
-    s->input_length += length;
+    memcpy(c->input + c->input_length, bytes, length);
+    c->input_length += length;
     pthread_mutex_unlock(&s->lock);
     wake(s);
     return MR_SSH_STATUS_OK;
+}
+
+static mr_ssh_status channel_resize(mr_ssh_session *s, uint32_t id, uint16_t columns, uint16_t rows,
+                                    uint16_t pixel_width, uint16_t pixel_height) {
+    if (!s || !valid_size(columns, rows)) return MR_SSH_ERROR_INVALID_ARGUMENT;
+    pthread_mutex_lock(&s->lock);
+    term_channel *c = find_channel(s, id);
+    if (!c) {
+        pthread_mutex_unlock(&s->lock);
+        /* The first shell's size is kept for a session that has none yet. */
+        return id == 0 ? MR_SSH_STATUS_OK : MR_SSH_ERROR_INVALID_ARGUMENT;
+    }
+    c->columns = columns;
+    c->rows = rows;
+    c->pixel_width = pixel_width;
+    c->pixel_height = pixel_height;
+    c->resize_pending = 1;
+    pthread_mutex_unlock(&s->lock);
+    wake(s);
+    return MR_SSH_STATUS_OK;
+}
+
+static mr_ssh_status channel_resume(mr_ssh_session *s, uint32_t id) {
+    if (!s) return MR_SSH_ERROR_INVALID_ARGUMENT;
+    pthread_mutex_lock(&s->lock);
+    term_channel *c = find_channel(s, id);
+    if (c) c->resume_requested = 1;
+    pthread_mutex_unlock(&s->lock);
+    if (!c) return id == 0 ? MR_SSH_STATUS_OK : MR_SSH_ERROR_INVALID_ARGUMENT;
+    wake(s);
+    return MR_SSH_STATUS_OK;
+}
+
+mr_ssh_status mr_ssh_session_write(mr_ssh_session *s, const uint8_t *bytes, size_t length) {
+    return channel_write(s, 0, bytes, length);
 }
 
 mr_ssh_status mr_ssh_session_resize(
     mr_ssh_session *s, uint16_t columns, uint16_t rows, uint16_t pixel_width, uint16_t pixel_height) {
-    if (!s || columns < MR_SSH_MIN_TERMINAL_DIMENSION || rows < MR_SSH_MIN_TERMINAL_DIMENSION ||
-        columns > MR_SSH_MAX_TERMINAL_DIMENSION || rows > MR_SSH_MAX_TERMINAL_DIMENSION) {
-        return MR_SSH_ERROR_INVALID_ARGUMENT;
-    }
+    return channel_resize(s, 0, columns, rows, pixel_width, pixel_height);
+}
+
+mr_ssh_status mr_ssh_session_resume_output(mr_ssh_session *s) { return channel_resume(s, 0); }
+
+mr_ssh_status mr_ssh_channel_write(mr_ssh_session *s, uint32_t id, const uint8_t *bytes, size_t length) {
+    return channel_write(s, id, bytes, length);
+}
+
+mr_ssh_status mr_ssh_channel_resize(mr_ssh_session *s, uint32_t id, uint16_t columns, uint16_t rows,
+                                    uint16_t pixel_width, uint16_t pixel_height) {
+    return channel_resize(s, id, columns, rows, pixel_width, pixel_height);
+}
+
+mr_ssh_status mr_ssh_channel_resume_output(mr_ssh_session *s, uint32_t id) { return channel_resume(s, id); }
+
+mr_ssh_status mr_ssh_channel_close(mr_ssh_session *s, uint32_t id) {
+    if (!s) return MR_SSH_ERROR_INVALID_ARGUMENT;
     pthread_mutex_lock(&s->lock);
-    s->columns = columns;
-    s->rows = rows;
-    s->pixel_width = pixel_width;
-    s->pixel_height = pixel_height;
-    s->resize_pending = 1;
+    term_channel *c = find_channel(s, id);
+    if (c) c->close_requested = 1;
     pthread_mutex_unlock(&s->lock);
+    if (!c) return MR_SSH_ERROR_INVALID_ARGUMENT;
     wake(s);
     return MR_SSH_STATUS_OK;
 }
 
-mr_ssh_status mr_ssh_session_resume_output(mr_ssh_session *s) {
-    if (!s) return MR_SSH_ERROR_INVALID_ARGUMENT;
+mr_ssh_status mr_ssh_session_open_channel(
+    mr_ssh_session *s, const mr_ssh_channel_config *config, uint32_t *out_id) {
+    if (out_id) *out_id = 0;
+    if (!s || !config || !out_id || config->struct_size < sizeof(mr_ssh_channel_config)) {
+        return MR_SSH_ERROR_INVALID_ARGUMENT;
+    }
+    if (!s->callbacks.on_channel_output || !s->callbacks.on_channel_state) return MR_SSH_ERROR_INVALID_STATE;
+    if (config->kind == MR_SSH_CHANNEL_SHELL) {
+        if (config->command || !valid_size(config->columns, config->rows)) return MR_SSH_ERROR_INVALID_ARGUMENT;
+    } else if (config->kind == MR_SSH_CHANNEL_EXEC) {
+        if (!config->command || strnlen(config->command, MR_SSH_MAX_COMMAND_BYTES + 1) == 0 ||
+            strnlen(config->command, MR_SSH_MAX_COMMAND_BYTES + 1) > MR_SSH_MAX_COMMAND_BYTES) {
+            return MR_SSH_ERROR_INVALID_ARGUMENT;
+        }
+    } else {
+        return MR_SSH_ERROR_INVALID_ARGUMENT;
+    }
     pthread_mutex_lock(&s->lock);
-    s->resume_requested = 1;
+    if (s->stop_requested) {
+        pthread_mutex_unlock(&s->lock);
+        return MR_SSH_ERROR_STOPPED;
+    }
+    if (s->channel_count >= MR_SSH_MAX_CHANNELS) {
+        pthread_mutex_unlock(&s->lock);
+        return MR_SSH_ERROR_QUEUE_FULL;
+    }
+    uint32_t id = ++s->next_channel_id;
+    term_channel *c = channel_new(id, config->kind, config->command, config->columns, config->rows,
+                                  config->pixel_width, config->pixel_height);
+    if (!c) {
+        pthread_mutex_unlock(&s->lock);
+        return MR_SSH_ERROR_OUT_OF_MEMORY;
+    }
+    s->channels[s->channel_count++] = c;
     pthread_mutex_unlock(&s->lock);
+    *out_id = id;
     wake(s);
     return MR_SSH_STATUS_OK;
 }
@@ -539,8 +703,10 @@ static int set_nonblocking(int fd) {
     return flags < 0 ? -1 : fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-/* The strings create copied. */
+/* The strings create copied, and the channels. */
 static void free_copies(mr_ssh_session *s) {
+    for (size_t i = 0; i < s->channel_count; i++) channel_free(s->channels[i]);
+    s->channel_count = 0;
     for (size_t i = 0; i < s->forward_count; i++) free((char *)s->forwards[i].remote_host);
     free(s->forwards);
     free(s->proxy_host);
@@ -558,9 +724,11 @@ mr_ssh_status mr_ssh_session_create(
         return MR_SSH_ERROR_INVALID_ARGUMENT;
     }
     if (!callbacks->on_state || !callbacks->on_host_key || !callbacks->on_auth_request ||
-        !callbacks->on_output) {
+        !(callbacks->on_output || callbacks->on_channel_output)) {
         return MR_SSH_ERROR_INVALID_ARGUMENT;
     }
+    /* Both or neither. */
+    if (!callbacks->on_channel_output != !callbacks->on_channel_state) return MR_SSH_ERROR_INVALID_ARGUMENT;
     if (config->forward_count > MR_SSH_MAX_FORWARDS || (config->forward_count && !config->forwards)) {
         return MR_SSH_ERROR_INVALID_ARGUMENT;
     }
@@ -616,10 +784,16 @@ mr_ssh_status mr_ssh_session_create(
         s->proxy_port = config->proxy_port ? config->proxy_port : 1080;
     }
     s->port = config->port;
-    s->columns = config->columns;
-    s->rows = config->rows;
-    s->pixel_width = config->pixel_width;
-    s->pixel_height = config->pixel_height;
+    if (!config->defer_shell) {
+        s->channels[0] = channel_new(0, MR_SSH_CHANNEL_SHELL, NULL, config->columns, config->rows,
+                                     config->pixel_width, config->pixel_height);
+        if (!s->channels[0]) {
+            free_copies(s);
+            free(s);
+            return MR_SSH_ERROR_OUT_OF_MEMORY;
+        }
+        s->channel_count = 1;
+    }
     s->keepalive_seconds = config->keepalive_seconds;
     s->connect_timeout_ms = config->connect_timeout_ms ? config->connect_timeout_ms
                                                        : MR_SSH_DEFAULT_CONNECT_TIMEOUT_MS;
@@ -676,7 +850,6 @@ mr_ssh_status mr_ssh_session_destroy(mr_ssh_session *s) {
     clear_answer(&s->answer);
     pthread_mutex_unlock(&s->lock);
 
-    wipe_free(s->input, s->input_capacity);
     close(s->wake_pipe[0]);
     close(s->wake_pipe[1]);
     pthread_mutex_destroy(&s->lock);
@@ -1434,37 +1607,265 @@ static int authenticate(mr_ssh_session *s, mr_ssh_failure *failure, int32_t *det
 
 /* ---- the run thread: the shell ----------------------------------------- */
 
-static int open_shell(mr_ssh_session *s, mr_ssh_failure *failure, int32_t *detail) {
+/* ---- channels -------------------------------------------------------------- */
+
+static void report_channel(mr_ssh_session *s, term_channel *c, mr_ssh_channel_state state, int32_t detail) {
+    if (s->callbacks.on_channel_state) s->callbacks.on_channel_state(s->context, c->id, state, detail);
+}
+
+static size_t deliver(mr_ssh_session *s, term_channel *c, const uint8_t *bytes, size_t length) {
+    if (s->callbacks.on_channel_output) return s->callbacks.on_channel_output(s->context, c->id, bytes, length);
+    /* A caller without channels only ever has the first shell. */
+    return c->id == 0 ? s->callbacks.on_output(s->context, bytes, length) : length;
+}
+
+/* Hands a channel's held output to the caller. Returns 1 when all of it was
+ * taken. */
+static int deliver_held(mr_ssh_session *s, term_channel *c) {
+    while (c->held_offset < c->held_length) {
+        size_t remaining = c->held_length - c->held_offset;
+        size_t taken = deliver(s, c, c->held_output + c->held_offset, remaining);
+        if (taken > remaining) taken = remaining;
+        if (taken == 0) return 0;
+        c->held_offset += taken;
+    }
+    c->held_offset = c->held_length = 0;
+    return 1;
+}
+
+/* Frees a libssh2 channel without waiting long: a close the server never
+ * answers must not hold the loop up. */
+static void free_libssh2_channel(mr_ssh_session *s, LIBSSH2_CHANNEL *channel) {
+    if (!channel) return;
+    int rc;
+    int64_t deadline = now_ms() + CLOSE_TIMEOUT_MS;
+    SSH_RETRY(s, rc, deadline, libssh2_channel_free(channel));
+    (void)rc;
+}
+
+/* Opens a channel: a session channel, then a PTY and the shell, or the
+ * command. Returns 0 or the libssh2 error (EAGAIN: stopped or timed out).
+ * The rest of the connection waits meanwhile, bounded by the deadline;
+ * what arrives for other channels queues inside libssh2. */
+static int open_term_channel(mr_ssh_session *s, term_channel *c) {
     int64_t deadline = step_deadline();
+    LIBSSH2_CHANNEL *channel = NULL;
     for (;;) {
-        s->channel = libssh2_channel_open_session(s->ssh);
-        if (s->channel || libssh2_session_last_errno(s->ssh) != LIBSSH2_ERROR_EAGAIN) break;
+        channel = libssh2_channel_open_session(s->ssh);
+        if (channel || libssh2_session_last_errno(s->ssh) != LIBSSH2_ERROR_EAGAIN) break;
         int64_t left = deadline - now_ms();
         if (left <= 0 || wait_socket(s, 0, (int)left) < 0) break;
     }
-    if (!s->channel) {
-        *failure = stop_requested(s) ? MR_SSH_FAILURE_CANCELLED : MR_SSH_FAILURE_CHANNEL;
-        *detail = libssh2_session_last_errno(s->ssh);
-        return -1;
+    if (!channel) {
+        int error = libssh2_session_last_errno(s->ssh);
+        return error ? error : LIBSSH2_ERROR_CHANNEL_FAILURE;
     }
     int rc;
-    SSH_RETRY(s, rc, deadline, libssh2_channel_handle_extended_data2(s->channel, LIBSSH2_CHANNEL_EXTENDED_DATA_MERGE));
-
-    pthread_mutex_lock(&s->lock);
-    uint16_t columns = s->columns, rows = s->rows, pw = s->pixel_width, ph = s->pixel_height;
-    s->resize_pending = 0;
-    pthread_mutex_unlock(&s->lock);
-
-    SSH_RETRY(s, rc, deadline,
-              libssh2_channel_request_pty_ex(s->channel, s->term, (unsigned int)strlen(s->term),
-                                             NULL, 0, columns, rows, pw, ph));
-    if (rc == 0) SSH_RETRY(s, rc, deadline, libssh2_channel_shell(s->channel));
+    SSH_RETRY(s, rc, deadline, libssh2_channel_handle_extended_data2(channel, LIBSSH2_CHANNEL_EXTENDED_DATA_MERGE));
+    if (c->kind == MR_SSH_CHANNEL_SHELL) {
+        pthread_mutex_lock(&s->lock);
+        uint16_t columns = c->columns, rows = c->rows, pw = c->pixel_width, ph = c->pixel_height;
+        c->resize_pending = 0;
+        pthread_mutex_unlock(&s->lock);
+        SSH_RETRY(s, rc, deadline,
+                  libssh2_channel_request_pty_ex(channel, s->term, (unsigned int)strlen(s->term),
+                                                 NULL, 0, columns, rows, pw, ph));
+        if (rc == 0) SSH_RETRY(s, rc, deadline, libssh2_channel_shell(channel));
+    } else {
+        SSH_RETRY(s, rc, deadline, libssh2_channel_exec(channel, c->command));
+    }
+    if (rc == 0 && !c->held_output) {
+        c->held_output = malloc(READ_CHUNK);
+        if (!c->held_output) rc = LIBSSH2_ERROR_ALLOC;
+    }
     if (rc != 0) {
-        *failure = stop_requested(s) ? MR_SSH_FAILURE_CANCELLED : MR_SSH_FAILURE_CHANNEL;
-        *detail = rc;
-        return -1;
+        free_libssh2_channel(s, channel);
+        return rc;
+    }
+    c->channel = channel;
+    return 0;
+}
+
+/* Takes an ended channel out: nobody can reach it after this. */
+static void remove_channel(mr_ssh_session *s, term_channel *c) {
+    pthread_mutex_lock(&s->lock);
+    c->phase = PHASE_DONE;
+    for (size_t i = 0; i < s->channel_count; i++) {
+        if (s->channels[i] != c) continue;
+        memmove(&s->channels[i], &s->channels[i + 1], (s->channel_count - i - 1) * sizeof s->channels[0]);
+        s->channels[--s->channel_count] = NULL;
+        break;
+    }
+    pthread_mutex_unlock(&s->lock);
+    free_libssh2_channel(s, c->channel);
+    c->channel = NULL;
+    channel_free(c);
+}
+
+/* Closes our end and waits, briefly, for the server's: the exit status comes
+ * with it. */
+static int32_t close_and_collect(mr_ssh_session *s, term_channel *c) {
+    int32_t exit_status = -1;
+    int rc;
+    int64_t deadline = now_ms() + CLOSE_TIMEOUT_MS;
+    SSH_RETRY(s, rc, deadline, libssh2_channel_close(c->channel));
+    if (rc == 0) {
+        SSH_RETRY(s, rc, deadline, libssh2_channel_wait_closed(c->channel));
+        exit_status = libssh2_channel_get_exit_status(c->channel);
+    }
+    return exit_status;
+}
+
+/* One round of an open channel's I/O. Returns 0; 1 when it ended (its end
+ * reported, *exit_status set, and it is removed by the caller); or a
+ * negative libssh2 error, which ends the session. */
+static int step_channel(mr_ssh_session *s, term_channel *c, uint8_t *buffer, int32_t *exit_status) {
+    pthread_mutex_lock(&s->lock);
+    int resume = c->resume_requested;
+    c->resume_requested = 0;
+    int resize = c->resize_pending;
+    int close_requested = c->close_requested;
+    uint16_t columns = c->columns, rows = c->rows, pw = c->pixel_width, ph = c->pixel_height;
+    pthread_mutex_unlock(&s->lock);
+    if (c->paused && resume && deliver_held(s, c)) c->paused = 0;
+    c->want_write = 0;
+    c->resize_blocked = 0;
+
+    if (close_requested) {
+        *exit_status = close_and_collect(s, c);
+        report_channel(s, c, MR_SSH_CHANNEL_CLOSED, *exit_status);
+        return 1;
+    }
+
+    /* A send never waits for the socket here - send_callback queues what it
+     * does not take, and wait_io polls POLLOUT while anything is queued - so
+     * an EAGAIN means waiting for inbound data: a reply, a window
+     * adjustment, a key exchange. */
+    if (resize && c->kind == MR_SSH_CHANNEL_SHELL) {
+        if (!c->resize_in_flight) {
+            c->sent_columns = columns;
+            c->sent_rows = rows;
+            c->sent_pw = pw;
+            c->sent_ph = ph;
+        }
+        int rc = libssh2_channel_request_pty_size_ex(c->channel, c->sent_columns, c->sent_rows,
+                                                     c->sent_pw, c->sent_ph);
+        c->resize_blocked = rc == LIBSSH2_ERROR_EAGAIN;
+        c->resize_in_flight = c->resize_blocked;
+        if (!c->resize_blocked) {
+            pthread_mutex_lock(&s->lock);
+            /* Only if what went out is still the size: else the newer one is
+             * sent next. */
+            if (c->columns == c->sent_columns && c->rows == c->sent_rows &&
+                c->pixel_width == c->sent_pw && c->pixel_height == c->sent_ph) {
+                c->resize_pending = 0;
+            }
+            pthread_mutex_unlock(&s->lock);
+        }
+    } else if (resize) {
+        pthread_mutex_lock(&s->lock);
+        c->resize_pending = 0;
+        pthread_mutex_unlock(&s->lock);
+    }
+
+    /* Input, while the send queue has room for it. */
+    for (;;) {
+        if (send_congested(s)) {
+            c->want_write = 1;
+            break;
+        }
+        uint8_t chunk[WRITE_CHUNK];
+        pthread_mutex_lock(&s->lock);
+        size_t length = c->input_length < WRITE_CHUNK ? c->input_length : WRITE_CHUNK;
+        if (length) memcpy(chunk, c->input, length);
+        pthread_mutex_unlock(&s->lock);
+        if (!length) break;
+        ssize_t n = libssh2_channel_write_ex(c->channel, 0, (const char *)chunk, length);
+        wipe(chunk, length);
+        /* 0: the window is used up. */
+        if (n == LIBSSH2_ERROR_EAGAIN || n == 0) {
+            c->want_write = 1;
+            break;
+        }
+        if (n < 0) return (int)n;
+        pthread_mutex_lock(&s->lock);
+        memmove(c->input, c->input + n, c->input_length - (size_t)n);
+        c->input_length -= (size_t)n;
+        pthread_mutex_unlock(&s->lock);
+    }
+
+    /* Output. While paused nothing is read: libssh2 stops adjusting the
+     * window, and the server stops sending once it is used up. */
+    while (!c->paused) {
+        ssize_t n = libssh2_channel_read_ex(c->channel, 0, (char *)buffer, READ_CHUNK);
+        if (n == LIBSSH2_ERROR_EAGAIN || n == 0) break;
+        if (n < 0) return (int)n;
+        memcpy(c->held_output, buffer, (size_t)n);
+        c->held_length = (size_t)n;
+        c->held_offset = 0;
+        if (!deliver_held(s, c)) c->paused = 1;
+    }
+    /* While paused the transport is still read, without taking the channel's
+     * data: a read of 0 bytes. Forwards, other channels and keepalive replies
+     * keep moving, a hang-up is noticed, and the socket does not stay
+     * readable, which would make poll spin. What arrives for this channel
+     * queues inside libssh2, bounded by its window, which grows back only by
+     * what the caller has taken. */
+    if (c->paused) {
+        ssize_t n = libssh2_channel_read_ex(c->channel, 0, (char *)buffer, 0);
+        if (n < 0 && n != LIBSSH2_ERROR_EAGAIN) return (int)n;
+    }
+
+    if (!c->paused && libssh2_channel_eof(c->channel)) {
+        *exit_status = close_and_collect(s, c);
+        report_channel(s, c, MR_SSH_CHANNEL_CLOSED, *exit_status);
+        return 1;
     }
     return 0;
+}
+
+/* Opens what the caller asked for since the last round. A refusal is the
+ * channel's alone: reported, and the session goes on. */
+static void open_pending_channels(mr_ssh_session *s) {
+    for (;;) {
+        term_channel *c = NULL;
+        pthread_mutex_lock(&s->lock);
+        for (size_t i = 0; i < s->channel_count; i++) {
+            if (s->channels[i]->phase == PHASE_PENDING) {
+                c = s->channels[i];
+                break;
+            }
+        }
+        int closed = c && c->close_requested;
+        pthread_mutex_unlock(&s->lock);
+        if (!c || stop_requested(s)) return;
+        if (c->kind == MR_SSH_CHANNEL_SHELL) s->had_shell = 1;
+        if (closed) {
+            report_channel(s, c, MR_SSH_CHANNEL_CLOSED, -1);
+            remove_channel(s, c);
+            continue;
+        }
+        int rc = open_term_channel(s, c);
+        if (rc != 0) {
+            if (stop_requested(s)) return;
+            report_channel(s, c, MR_SSH_CHANNEL_FAILED, rc);
+            remove_channel(s, c);
+            continue;
+        }
+        pthread_mutex_lock(&s->lock);
+        c->phase = PHASE_OPEN;
+        pthread_mutex_unlock(&s->lock);
+        report_channel(s, c, MR_SSH_CHANNEL_OPEN, 0);
+    }
+}
+
+/* Under the lock: shells open or on their way. */
+static size_t live_shells(mr_ssh_session *s) {
+    size_t count = 0;
+    for (size_t i = 0; i < s->channel_count; i++) {
+        if (s->channels[i]->kind == MR_SSH_CHANNEL_SHELL && s->channels[i]->phase != PHASE_DONE) count++;
+    }
+    return count;
 }
 
 static void report_forward(void *context, size_t index, int32_t error) {
@@ -1472,28 +1873,11 @@ static void report_forward(void *context, size_t index, int32_t error) {
     if (s->callbacks.on_forward) s->callbacks.on_forward(s->context, index, error);
 }
 
-/* Hands held output to the caller. Returns 1 when all of it was taken. */
-static int deliver_held(mr_ssh_session *s) {
-    while (s->held_offset < s->held_length) {
-        size_t remaining = s->held_length - s->held_offset;
-        size_t taken = s->callbacks.on_output(s->context, s->held_output + s->held_offset, remaining);
-        if (taken > remaining) taken = remaining;
-        if (taken == 0) return 0;
-        s->held_offset += taken;
-    }
-    s->held_offset = s->held_length = 0;
-    return 1;
-}
-
-/* The connected loop. Returns when the shell ends, the connection drops, or a
- * stop is requested; reports the final state itself. */
+/* The connected loop. Returns when the last shell ends, the connection
+ * drops, or a stop is requested; reports the final state itself. */
 static void run_shell(mr_ssh_session *s) {
     uint8_t *buffer = malloc(READ_CHUNK);
-    s->held_output = malloc(READ_CHUNK);
-    if (!buffer || !s->held_output) {
-        free(buffer);
-        free(s->held_output);
-        s->held_output = NULL;
+    if (!buffer) {
         report_state(s, MR_SSH_STATE_FAILED, MR_SSH_FAILURE_INTERNAL, 0);
         return;
     }
@@ -1508,136 +1892,54 @@ static void run_shell(mr_ssh_session *s) {
         }
     }
 
-    int paused = 0;
-    /* The size of a resize libssh2 has begun to send: once it says EAGAIN it
-     * finishes that packet, whatever size the next call asks for. */
-    int resize_in_flight = 0;
-    uint16_t sent_columns = 0, sent_rows = 0, sent_pw = 0, sent_ph = 0;
+    int32_t last_exit = -1;
     for (;;) {
         if (stop_requested(s)) {
             report_state(s, MR_SSH_STATE_CLOSED, MR_SSH_FAILURE_CANCELLED, -1);
             break;
         }
         s->received = 0;
+        open_pending_channels(s);
+        if (stop_requested(s)) continue;
 
-        /* The caller made room. */
+        /* Every open channel, in a snapshot: only this thread removes them,
+         * and one opened meanwhile waits for the next round. */
+        term_channel *open[MR_SSH_MAX_CHANNELS];
+        size_t open_count = 0;
         pthread_mutex_lock(&s->lock);
-        int resume = s->resume_requested;
-        s->resume_requested = 0;
-        int resize = s->resize_pending;
-        uint16_t columns = s->columns, rows = s->rows, pw = s->pixel_width, ph = s->pixel_height;
+        for (size_t i = 0; i < s->channel_count; i++) {
+            if (s->channels[i]->phase == PHASE_OPEN) open[open_count++] = s->channels[i];
+        }
         pthread_mutex_unlock(&s->lock);
-        if (paused && resume && deliver_held(s)) paused = 0;
 
-        /* A send never waits for the socket here - send_callback queues what
-         * it does not take, and wait_io polls POLLOUT while anything is
-         * queued - so an EAGAIN means waiting for inbound data: a reply, a
-         * window adjustment, a key exchange. */
         int fatal = 0;
-        int resize_blocked = 0;
-        if (resize) {
-            if (!resize_in_flight) {
-                sent_columns = columns;
-                sent_rows = rows;
-                sent_pw = pw;
-                sent_ph = ph;
-            }
-            int rc = libssh2_channel_request_pty_size_ex(s->channel, sent_columns, sent_rows,
-                                                         sent_pw, sent_ph);
-            resize_blocked = rc == LIBSSH2_ERROR_EAGAIN;
-            resize_in_flight = resize_blocked;
-            if (!resize_blocked) {
-                pthread_mutex_lock(&s->lock);
-                /* Only if what went out is still the size: else the newer
-                 * one is sent next. */
-                if (s->columns == sent_columns && s->rows == sent_rows &&
-                    s->pixel_width == sent_pw && s->pixel_height == sent_ph) {
-                    s->resize_pending = 0;
-                }
-                pthread_mutex_unlock(&s->lock);
-            }
-        }
-
-        /* Input, while the send queue has room for it. */
-        int want_write = 0;
-        for (;;) {
-            if (send_congested(s)) {
-                want_write = 1;
-                break;
-            }
-            uint8_t chunk[WRITE_CHUNK];
-            pthread_mutex_lock(&s->lock);
-            size_t length = s->input_length < WRITE_CHUNK ? s->input_length : WRITE_CHUNK;
-            if (length) memcpy(chunk, s->input, length);
-            pthread_mutex_unlock(&s->lock);
-            if (!length) break;
-            ssize_t n = libssh2_channel_write_ex(s->channel, 0, (const char *)chunk, length);
-            wipe(chunk, length);
-            /* 0: the window is used up. */
-            if (n == LIBSSH2_ERROR_EAGAIN || n == 0) {
-                want_write = 1;
-                break;
-            }
-            if (n < 0) {
-                report_state(s, MR_SSH_STATE_FAILED, failure_for_libssh2((int)n), (int32_t)n);
+        for (size_t i = 0; i < open_count && !fatal; i++) {
+            int32_t exit_status = -1;
+            int rc = step_channel(s, open[i], buffer, &exit_status);
+            if (rc < 0) {
+                report_state(s, MR_SSH_STATE_FAILED, failure_for_libssh2(rc), rc);
                 fatal = 1;
-                break;
-            }
-            pthread_mutex_lock(&s->lock);
-            memmove(s->input, s->input + n, s->input_length - (size_t)n);
-            s->input_length -= (size_t)n;
-            pthread_mutex_unlock(&s->lock);
-        }
-        if (fatal) break;
-
-        /* Output. While paused nothing is read: libssh2 stops adjusting the
-         * window, and the server stops sending once it is used up. */
-        while (!paused) {
-            ssize_t n = libssh2_channel_read_ex(s->channel, 0, (char *)buffer, READ_CHUNK);
-            if (n == LIBSSH2_ERROR_EAGAIN || n == 0) break;
-            if (n < 0) {
-                report_state(s, MR_SSH_STATE_FAILED, failure_for_libssh2((int)n), (int32_t)n);
-                fatal = 1;
-                break;
-            }
-            memcpy(s->held_output, buffer, (size_t)n);
-            s->held_length = (size_t)n;
-            s->held_offset = 0;
-            if (!deliver_held(s)) paused = 1;
-        }
-        /* While paused the transport is still read, without taking the
-         * shell's data: a read of 0 bytes. Forwards and keepalive replies
-         * keep moving, a hang-up is noticed, and the socket does not stay
-         * readable, which would make poll spin. What arrives for the shell
-         * queues inside libssh2, bounded by the window, which grows back
-         * only by what the caller has taken. */
-        if (paused && !fatal) {
-            ssize_t n = libssh2_channel_read_ex(s->channel, 0, (char *)buffer, 0);
-            if (n < 0 && n != LIBSSH2_ERROR_EAGAIN) {
-                report_state(s, MR_SSH_STATE_FAILED, failure_for_libssh2((int)n), (int32_t)n);
-                fatal = 1;
+            } else if (rc == 1) {
+                if (open[i]->kind == MR_SSH_CHANNEL_SHELL) last_exit = exit_status;
+                remove_channel(s, open[i]);
+                open[i] = NULL;
             }
         }
         if (fatal) break;
 
-        /* Forwards. Their reads can pull the shell's packets in too, so any
+        pthread_mutex_lock(&s->lock);
+        int ended = s->had_shell && live_shells(s) == 0;
+        pthread_mutex_unlock(&s->lock);
+        if (ended) {
+            report_state(s, MR_SSH_STATE_CLOSED, MR_SSH_FAILURE_NONE, last_exit);
+            break;
+        }
+
+        /* Forwards. Their reads can pull the shells' packets in too, so any
          * progress loops round before polling again. */
         int forwarded = mr_forwarder_step(forwarder);
         if (forwarded < 0) {
             report_state(s, MR_SSH_STATE_FAILED, failure_for_libssh2(forwarded), forwarded);
-            break;
-        }
-
-        if (!paused && libssh2_channel_eof(s->channel)) {
-            int exit_status = -1;
-            int rc;
-            int64_t deadline = now_ms() + CLOSE_TIMEOUT_MS;
-            SSH_RETRY(s, rc, deadline, libssh2_channel_close(s->channel));
-            if (rc == 0) {
-                SSH_RETRY(s, rc, deadline, libssh2_channel_wait_closed(s->channel));
-                exit_status = libssh2_channel_get_exit_status(s->channel);
-            }
-            report_state(s, MR_SSH_STATE_CLOSED, MR_SSH_FAILURE_NONE, exit_status);
             break;
         }
 
@@ -1656,22 +1958,35 @@ static void run_shell(mr_ssh_session *s) {
         if (forward_timeout >= 0 && (timeout_ms < 0 || forward_timeout < timeout_ms)) {
             timeout_ms = forward_timeout;
         }
+        int more = 0;
         pthread_mutex_lock(&s->lock);
-        int more = (s->resize_pending && !resize_blocked) || (s->input_length && !want_write) || (paused && s->resume_requested);
+        for (size_t i = 0; i < s->channel_count && !more; i++) {
+            term_channel *c = s->channels[i];
+            if (c->phase == PHASE_PENDING || c->close_requested) more = 1;
+            else if (c->phase == PHASE_OPEN) {
+                more = (c->resize_pending && !c->resize_blocked) || (c->input_length && !c->want_write) ||
+                       (c->paused && c->resume_requested);
+            }
+        }
         pthread_mutex_unlock(&s->lock);
         if (more || forwarded > 0) continue;
         /* A call reads whatever the socket has, for every channel, and may
-         * say EAGAIN for its own: a tunnel's read can pull in the shell's
-         * data, or another tunnel's, after that channel's read this round.
-         * The socket is then no longer readable, so that data is read now,
-         * not on the next unrelated packet. Only when bytes came in this
-         * round: what was already waiting when its channel's read said
-         * EAGAIN (a read blocked behind a key exchange) is not retried
-         * until more arrives, so this never spins. */
+         * say EAGAIN for its own: a tunnel's read can pull in a shell's data,
+         * or another channel's, after that channel's read this round. The
+         * socket is then no longer readable, so that data is read now, not
+         * on the next unrelated packet. Only when bytes came in this round:
+         * what was already waiting when its channel's read said EAGAIN (a
+         * read blocked behind a key exchange) is not retried until more
+         * arrives, so this never spins. */
         if (s->received) {
-            unsigned long queued = 0;
-            if (!paused) libssh2_channel_window_read_ex(s->channel, &queued, NULL);
-            if (queued > 0 || mr_forwarder_data_waiting(forwarder)) continue;
+            int waiting = mr_forwarder_data_waiting(forwarder);
+            for (size_t i = 0; i < open_count && !waiting; i++) {
+                if (!open[i] || open[i]->paused) continue;
+                unsigned long queued = 0;
+                libssh2_channel_window_read_ex(open[i]->channel, &queued, NULL);
+                waiting = queued > 0;
+            }
+            if (waiting) continue;
         }
 
         /* Always readable: paused or not, the loop reads whatever arrives. */
@@ -1679,8 +1994,6 @@ static void run_shell(mr_ssh_session *s) {
     }
     mr_forwarder_destroy(forwarder);
     wipe_free(buffer, READ_CHUNK);
-    wipe_free(s->held_output, READ_CHUNK);
-    s->held_output = NULL;
 }
 
 /* Always finishes promptly and frees everything, whatever state the
@@ -1711,9 +2024,11 @@ static void close_connection(mr_ssh_session *s) {
          * now, but it is retried a few times rather than trusted. */
         s->send_error = EPIPE;
         shutdown(s->socket_fd, SHUT_RDWR);
-        if (s->channel) {
-            for (int i = 0; i < 4 && libssh2_channel_free(s->channel) == LIBSSH2_ERROR_EAGAIN; i++) {}
-            s->channel = NULL;
+        for (size_t i = 0; i < s->channel_count; i++) {
+            term_channel *c = s->channels[i];
+            if (!c->channel) continue;
+            for (int j = 0; j < 4 && libssh2_channel_free(c->channel) == LIBSSH2_ERROR_EAGAIN; j++) {}
+            c->channel = NULL;
         }
         for (int i = 0; i < 4 && libssh2_session_free(s->ssh) == LIBSSH2_ERROR_EAGAIN; i++) {}
         s->ssh = NULL;
@@ -1803,9 +2118,27 @@ mr_ssh_status mr_ssh_session_run(mr_ssh_session *s) {
 
     report_state(s, MR_SSH_STATE_AUTHENTICATING, MR_SSH_FAILURE_NONE, 0);
     if (authenticate(s, &failure, &detail) != 0) goto failed;
-    if (open_shell(s, &failure, &detail) != 0) goto failed;
-
-    report_state(s, MR_SSH_STATE_CONNECTED, MR_SSH_FAILURE_NONE, 0);
+    {
+        /* The first shell is opened here, so a refusal fails the session as
+         * it always has; with defer_shell there is none yet. */
+        pthread_mutex_lock(&s->lock);
+        term_channel *first = s->channel_count && s->channels[0]->id == 0 ? s->channels[0] : NULL;
+        pthread_mutex_unlock(&s->lock);
+        if (first) {
+            s->had_shell = 1;
+            int rc = open_term_channel(s, first);
+            if (rc != 0) {
+                failure = stop_requested(s) ? MR_SSH_FAILURE_CANCELLED : MR_SSH_FAILURE_CHANNEL;
+                detail = rc;
+                goto failed;
+            }
+            pthread_mutex_lock(&s->lock);
+            first->phase = PHASE_OPEN;
+            pthread_mutex_unlock(&s->lock);
+        }
+        report_state(s, MR_SSH_STATE_CONNECTED, MR_SSH_FAILURE_NONE, 0);
+        if (first) report_channel(s, first, MR_SSH_CHANNEL_OPEN, 0);
+    }
     run_shell(s);
     goto done;
 

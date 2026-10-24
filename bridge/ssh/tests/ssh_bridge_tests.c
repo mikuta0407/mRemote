@@ -1281,6 +1281,220 @@ static void test_a_stop_while_the_proxy_is_silent_is_prompt(void) {
     proxy_stop(&p);
 }
 
+/* ---- channels (ABI 4) ---------------------------------------------------- */
+
+#define CH_SLOTS 32
+
+/* The harness, with output and state per channel. `base` comes first, so the
+ * shared callbacks take it as theirs. */
+typedef struct {
+    harness base;
+    char out[CH_SLOTS][8192];
+    size_t out_length[CH_SLOTS];
+    int opened[CH_SLOTS];
+    int ended[CH_SLOTS];
+    mr_ssh_channel_state end_state[CH_SLOTS];
+    int32_t end_detail[CH_SLOTS];
+} channel_harness;
+
+static size_t on_channel_output(void *context, uint32_t id, const uint8_t *bytes, size_t length) {
+    channel_harness *c = context;
+    pthread_mutex_lock(&c->base.lock);
+    if (id < CH_SLOTS) {
+        size_t room = sizeof c->out[id] - 1 - c->out_length[id];
+        size_t n = length < room ? length : room;
+        memcpy(c->out[id] + c->out_length[id], bytes, n);
+        c->out_length[id] += n;
+        c->out[id][c->out_length[id]] = 0;
+    }
+    pthread_cond_broadcast(&c->base.cond);
+    pthread_mutex_unlock(&c->base.lock);
+    return length;
+}
+
+static void on_channel_state(void *context, uint32_t id, mr_ssh_channel_state state, int32_t detail) {
+    channel_harness *c = context;
+    pthread_mutex_lock(&c->base.lock);
+    if (id < CH_SLOTS) {
+        if (state == MR_SSH_CHANNEL_OPEN) c->opened[id] = 1;
+        else {
+            c->ended[id] = 1;
+            c->end_state[id] = state;
+            c->end_detail[id] = detail;
+        }
+    }
+    pthread_cond_broadcast(&c->base.cond);
+    pthread_mutex_unlock(&c->base.lock);
+}
+
+static void channel_harness_start(channel_harness *c, int defer_shell) {
+    memset(c, 0, sizeof *c);
+    harness *h = &c->base;
+    pthread_mutex_init(&h->lock, NULL);
+    pthread_cond_init(&h->cond, NULL);
+    h->plan = PLAN_KEY;
+    h->key_name = "user_ed25519";
+    mr_ssh_config config = test_config("127.0.0.1", g_port, 5000);
+    config.defer_shell = defer_shell;
+    mr_ssh_callbacks callbacks = {
+        .on_state = on_state,
+        .on_host_key = on_host_key,
+        .on_auth_request = on_auth_request,
+        .on_channel_output = on_channel_output,
+        .on_channel_state = on_channel_state,
+    };
+    mr_ssh_status status = mr_ssh_session_create(&config, &callbacks, c, &h->session);
+    CHECK(status == MR_SSH_STATUS_OK, "create=%d", status);
+}
+
+/* Waits for `needle` in a channel's output, or (needle NULL) for its end. */
+static int wait_channel(channel_harness *c, uint32_t id, const char *needle, int seconds) {
+    struct timespec deadline;
+    deadline_in(&deadline, seconds);
+    pthread_mutex_lock(&c->base.lock);
+    int found = 0;
+    for (;;) {
+        if (needle ? strstr(c->out[id], needle) != NULL : c->ended[id]) {
+            found = 1;
+            break;
+        }
+        if (pthread_cond_timedwait(&c->base.cond, &c->base.lock, &deadline) != 0) break;
+    }
+    pthread_mutex_unlock(&c->base.lock);
+    return found;
+}
+
+static uint32_t open_channel(channel_harness *c, mr_ssh_channel_kind kind, const char *command) {
+    mr_ssh_channel_config config = {
+        .struct_size = sizeof config, .kind = kind, .command = command, .columns = 100, .rows = 30,
+    };
+    uint32_t id = 0;
+    mr_ssh_status status = mr_ssh_session_open_channel(c->base.session, &config, &id);
+    CHECK(status == MR_SSH_STATUS_OK && id > 0 && id < CH_SLOTS, "open_channel=%d id=%u", status, id);
+    return id;
+}
+
+static void channel_write(channel_harness *c, uint32_t id, const char *text) {
+    mr_ssh_status status = mr_ssh_channel_write(c->base.session, id, (const uint8_t *)text, strlen(text));
+    CHECK(status == MR_SSH_STATUS_OK, "channel_write(%u)=%d", id, status);
+}
+
+static void test_shells_share_one_connection(void) {
+    printf("two shells on one connection\n");
+    channel_harness c;
+    channel_harness_start(&c, 0);
+    pthread_t thread;
+    pthread_create(&thread, NULL, run_thread, &c.base);
+
+    channel_write(&c, 0, "echo first-$((1+1))\n");
+    CHECK(wait_channel(&c, 0, "first-2", 15), "first shell: %s", c.out[0]);
+    CHECK(c.opened[0], "channel 0 not reported open");
+    uint32_t second = open_channel(&c, MR_SSH_CHANNEL_SHELL, NULL);
+    /* Queued before it opens: sent once it does. */
+    channel_write(&c, second, "stty size; echo second-$((2+2))\n");
+    CHECK(wait_channel(&c, second, "second-4", 15), "second shell: %s", c.out[second]);
+    CHECK(strstr(c.out[second], "30 100") != NULL, "second shell's size: %s", c.out[second]);
+    CHECK(strstr(c.out[0], "second-4") == NULL, "the second shell's output reached the first");
+    CHECK(mr_ssh_channel_resize(c.base.session, second, 120, 40, 0, 0) == MR_SSH_STATUS_OK, "resize");
+    usleep(300 * 1000);
+    channel_write(&c, second, "stty size\n");
+    CHECK(wait_channel(&c, second, "40 120", 15), "second shell resized: %s", c.out[second]);
+
+    /* The first shell exits; the session lives on in the second. */
+    channel_write(&c, 0, "exit 4\n");
+    CHECK(wait_channel(&c, 0, NULL, 15), "first shell did not end");
+    CHECK(c.end_state[0] == MR_SSH_CHANNEL_CLOSED && c.end_detail[0] == 4,
+          "first shell end %u/%d", c.end_state[0], c.end_detail[0]);
+    CHECK(!c.base.ended, "the session ended with a shell still open");
+    CHECK(mr_ssh_channel_write(c.base.session, 0, (const uint8_t *)"x", 1) != MR_SSH_STATUS_OK,
+          "wrote to an ended channel");
+    channel_write(&c, second, "echo still-$((3+3))\n");
+    CHECK(wait_channel(&c, second, "still-6", 15), "second shell after the first ended");
+
+    /* Closed by the caller, as a closed tab: the last shell, so the session
+     * ends too. */
+    CHECK(mr_ssh_channel_close(c.base.session, second) == MR_SSH_STATUS_OK, "close");
+    CHECK(wait_channel(&c, second, NULL, 15), "second shell did not end");
+    CHECK(wait_for(&c.base, NULL, 15), "session did not end");
+    CHECK(c.base.last_state == MR_SSH_STATE_CLOSED && c.base.failure == MR_SSH_FAILURE_NONE,
+          "session end %u/%u", c.base.last_state, c.base.failure);
+    harness_finish(&c.base, thread);
+}
+
+static void test_a_deferred_session_runs_a_command_then_a_shell(void) {
+    printf("defer the shell; exec first\n");
+    channel_harness c;
+    channel_harness_start(&c, 1);
+    pthread_t thread;
+    pthread_create(&thread, NULL, run_thread, &c.base);
+
+    /* Asked before the connection is up: opened once signed in. */
+    uint32_t exec = open_channel(&c, MR_SSH_CHANNEL_EXEC, "echo exec-$((5*5)); echo err >&2; exit 7");
+    CHECK(wait_channel(&c, exec, NULL, 15), "exec did not end");
+    CHECK(c.opened[exec], "exec not reported open");
+    CHECK(strstr(c.out[exec], "exec-25") && strstr(c.out[exec], "err"), "exec output: %s", c.out[exec]);
+    CHECK(c.end_state[exec] == MR_SSH_CHANNEL_CLOSED && c.end_detail[exec] == 7,
+          "exec end %u/%d", c.end_state[exec], c.end_detail[exec]);
+    CHECK(c.base.connected && !c.base.ended, "a deferred session ended without a shell");
+    CHECK(!c.opened[0], "a deferred session opened a shell");
+
+    uint32_t shell = open_channel(&c, MR_SSH_CHANNEL_SHELL, NULL);
+    channel_write(&c, shell, "echo late-$((8+1)); exit 2\n");
+    CHECK(wait_channel(&c, shell, "late-9", 15), "late shell: %s", c.out[shell]);
+    CHECK(wait_for(&c.base, NULL, 15), "session did not end with its shell");
+    CHECK(c.base.detail == 2, "session exit status %d", c.base.detail);
+    harness_finish(&c.base, thread);
+}
+
+static void test_a_refused_command_and_the_channel_limit(void) {
+    printf("channel limit and a missing command\n");
+    channel_harness c;
+    channel_harness_start(&c, 0);
+    pthread_t thread;
+    pthread_create(&thread, NULL, run_thread, &c.base);
+    channel_write(&c, 0, "echo up-$((1+0))\n");
+    CHECK(wait_channel(&c, 0, "up-1", 15), "not up");
+
+    uint32_t missing = open_channel(&c, MR_SSH_CHANNEL_EXEC, "mremote-no-such-command-xyz");
+    CHECK(wait_channel(&c, missing, NULL, 15), "missing command did not end");
+    CHECK(c.end_state[missing] == MR_SSH_CHANNEL_CLOSED && c.end_detail[missing] == 127,
+          "missing command end %u/%d", c.end_state[missing], c.end_detail[missing]);
+
+    /* The first shell plus fifteen fill the table. */
+    uint32_t ids[MR_SSH_MAX_CHANNELS];
+    size_t count = 0;
+    mr_ssh_channel_config config = { .struct_size = sizeof config, .kind = MR_SSH_CHANNEL_EXEC,
+                                     .command = "sleep 5" };
+    for (;;) {
+        uint32_t id = 0;
+        mr_ssh_status status = mr_ssh_session_open_channel(c.base.session, &config, &id);
+        if (status != MR_SSH_STATUS_OK) {
+            CHECK(status == MR_SSH_ERROR_QUEUE_FULL, "past the limit=%d", status);
+            break;
+        }
+        CHECK(count < MR_SSH_MAX_CHANNELS, "more than the limit opened");
+        if (count >= MR_SSH_MAX_CHANNELS) break;
+        ids[count++] = id;
+    }
+    CHECK(count == MR_SSH_MAX_CHANNELS - 1, "opened %zu besides the shell", count);
+    for (size_t i = 0; i < count; i++) mr_ssh_channel_close(c.base.session, ids[i]);
+    mr_ssh_channel_config bad = { .struct_size = sizeof bad, .kind = MR_SSH_CHANNEL_SHELL, .columns = 0, .rows = 1 };
+    uint32_t id = 0;
+    CHECK(mr_ssh_session_open_channel(c.base.session, &bad, &id) == MR_SSH_ERROR_INVALID_ARGUMENT, "bad size");
+    CHECK(mr_ssh_channel_close(c.base.session, 999) == MR_SSH_ERROR_INVALID_ARGUMENT, "unknown channel");
+
+    /* A stop with channels open ends everything at once. */
+    mr_ssh_session_request_stop(c.base.session);
+    CHECK(wait_for(&c.base, NULL, 15), "did not stop");
+    CHECK(c.base.failure == MR_SSH_FAILURE_CANCELLED, "failure %u", c.base.failure);
+    harness_finish(&c.base, thread);
+}
+
+static size_t on_output_for_channels_check(void *context, uint32_t id, const uint8_t *bytes, size_t length) {
+    (void)context; (void)id; (void)bytes;
+    return length;
+}
+
 static void test_invalid_arguments_are_refused(void) {
     printf("argument checks\n");
     mr_ssh_session *session = NULL;
@@ -1331,7 +1545,16 @@ static void test_invalid_arguments_are_refused(void) {
     mr_ssh_auth_answer nul_password = { .method = MR_SSH_AUTH_PASSWORD,
                                         .secret = (const uint8_t *)"a\0b", .secret_length = 3 };
     CHECK(mr_ssh_session_answer_auth(session, 1, &nul_password) == MR_SSH_ERROR_INVALID_ARGUMENT, "NUL");
+    mr_ssh_channel_config shell = { .struct_size = sizeof shell, .kind = MR_SSH_CHANNEL_SHELL,
+                                    .columns = 80, .rows = 24 };
+    uint32_t channel = 0;
+    CHECK(mr_ssh_session_open_channel(session, &shell, &channel) == MR_SSH_ERROR_INVALID_STATE,
+          "channels without their callbacks");
     CHECK(mr_ssh_session_destroy(session) == MR_SSH_STATUS_OK, "destroy unstarted");
+    mr_ssh_callbacks half = callbacks;
+    half.on_channel_output = on_output_for_channels_check;
+    CHECK(mr_ssh_session_create(&config, &half, NULL, &session) == MR_SSH_ERROR_INVALID_ARGUMENT,
+          "channel output without channel state");
 }
 
 int main(void) {
@@ -1375,6 +1598,9 @@ int main(void) {
     test_a_proxy_carries_the_connection();
     test_proxy_failures_are_reported();
     test_a_stop_while_the_proxy_is_silent_is_prompt();
+    test_shells_share_one_connection();
+    test_a_deferred_session_runs_a_command_then_a_shell();
+    test_a_refused_command_and_the_channel_limit();
 
     if (g_failures) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);

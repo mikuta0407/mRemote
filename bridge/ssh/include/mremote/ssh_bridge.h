@@ -4,7 +4,9 @@
 /*
  * The C ABI over libssh2 (docs/ssh-design.md section 6.1).
  *
- * One mr_ssh_session is one connection with one interactive shell. libssh2
+ * One mr_ssh_session is one connection. It opens one interactive shell, and
+ * from ABI 4 more channels on the same connection: shells (tabs and panes)
+ * and commands run without a terminal (exec). libssh2
  * itself is touched only by the thread that calls mr_ssh_session_run; every
  * other function here is safe from any thread and only queues work for it.
  *
@@ -29,8 +31,9 @@
 extern "C" {
 #endif
 
-/* ABI 2: local port forwards. ABI 3: a SOCKS5 proxy. */
-#define MR_SSH_BRIDGE_ABI_VERSION 3u
+/* ABI 2: local port forwards. ABI 3: a SOCKS5 proxy. ABI 4: more channels on
+ * the connection. */
+#define MR_SSH_BRIDGE_ABI_VERSION 4u
 #define MR_SSH_DEFAULT_PORT 22u
 #define MR_SSH_MAX_HOST_BYTES 1024u
 #define MR_SSH_MAX_USERNAME_BYTES 1024u
@@ -55,6 +58,9 @@ extern "C" {
 /* ABI 3. A SOCKS5 domain name is at most 255 bytes (RFC 1928): through a
  * proxy, host is too. */
 #define MR_SSH_MAX_PROXY_HOST_BYTES 255u
+/* ABI 4. Shells and commands open at once, the first shell included. */
+#define MR_SSH_MAX_CHANNELS 16u
+#define MR_SSH_MAX_COMMAND_BYTES (16u * 1024u)
 
 typedef struct mr_ssh_session mr_ssh_session;
 typedef int32_t mr_ssh_status;
@@ -74,11 +80,12 @@ enum {
     MR_SSH_STATE_CONNECTING = 1,
     /* The server's identity is settled; signing in. */
     MR_SSH_STATE_AUTHENTICATING = 2,
-    /* The shell is open. */
+    /* The shell is open; with defer_shell, signed in. */
     MR_SSH_STATE_CONNECTED = 3,
-    /* Ended without a fault: the shell exited, the server closed the channel,
-     * or the caller stopped the session (error MR_SSH_FAILURE_CANCELLED).
-     * detail is the shell's exit status, or -1 when there is none. */
+    /* Ended without a fault: the last shell exited or was closed, the server
+     * closed it, or the caller stopped the session (error
+     * MR_SSH_FAILURE_CANCELLED). detail is the shell's exit status, or -1
+     * when there is none. */
     MR_SSH_STATE_CLOSED = 4,
     /* Ended by a fault. error says which; detail is the libssh2 error code or
      * errno behind it, for diagnostics only. */
@@ -132,6 +139,39 @@ enum {
     MR_SSH_PROXY_SOCKS5 = 1
 };
 
+/* ABI 4. What a channel runs. */
+typedef uint32_t mr_ssh_channel_kind;
+enum {
+    /* A PTY and the user's shell, as the first one. */
+    MR_SSH_CHANNEL_SHELL = 1,
+    /* `ssh host command`: no PTY, stdout and stderr merged. Does not keep the
+     * session open: only shells do. */
+    MR_SSH_CHANNEL_EXEC = 2
+};
+
+/* ABI 4. A channel's life, after mr_ssh_session_open_channel. */
+typedef uint32_t mr_ssh_channel_state;
+enum {
+    MR_SSH_CHANNEL_OPEN = 1,
+    /* It ended: the program exited (detail is its exit status, or -1), the
+     * server closed it, or the caller did. Last for the channel. */
+    MR_SSH_CHANNEL_CLOSED = 2,
+    /* The server refused it. detail is the libssh2 error code. Last. */
+    MR_SSH_CHANNEL_FAILED = 3
+};
+
+typedef struct {
+    uint32_t struct_size;
+    mr_ssh_channel_kind kind;
+    /* EXEC: the command line, copied. NULL for SHELL. */
+    const char *command;
+    /* SHELL: the terminal's size, as in mr_ssh_config. */
+    uint16_t columns;
+    uint16_t rows;
+    uint16_t pixel_width;
+    uint16_t pixel_height;
+} mr_ssh_channel_config;
+
 /* ABI 2: `ssh -L local_port:remote_host:remote_port`. The listener is on
  * 127.0.0.1 only, and exists while the shell is open. */
 typedef struct {
@@ -172,6 +212,10 @@ typedef struct {
     /* Reserved for a sign-in at the proxy (RFC 1929); must be NULL. */
     const char *proxy_username;
     const char *proxy_password;
+    /* ABI 4. Nonzero: no shell once signed in. The session waits, CONNECTED,
+     * for mr_ssh_session_open_channel - say after an exec has looked at what
+     * the host runs - and ends when its last shell does. */
+    int32_t defer_shell;
 } mr_ssh_config;
 
 typedef uint32_t mr_ssh_host_key_type;
@@ -245,19 +289,27 @@ typedef struct {
     /* May arrive with prompt_count 0 (an instruction only); answer it with
      * no answers. */
     void (*on_keyboard_interactive)(void *context, uint64_t challenge_id, const mr_ssh_kbd_request *request);
-    /* The shell's output, stdout and stderr merged. Returns how many bytes
-     * were taken. Fewer than length pauses reading - the server stops once
-     * its window fills - until mr_ssh_session_resume_output. */
+    /* The first shell's output, stdout and stderr merged. Returns how many
+     * bytes were taken. Fewer than length pauses reading - the server stops
+     * once its window fills - until mr_ssh_session_resume_output. Not called
+     * when on_channel_output is set, which then gets channel 0's too. */
     size_t (*on_output)(void *context, const uint8_t *bytes, size_t length);
     /* ABI 2, optional. Once per forward when the shell opens: error is 0
      * when it listens, else the errno (EADDRINUSE: the port is taken). */
     void (*on_forward)(void *context, size_t index, int32_t error);
+    /* ABI 4, both required to open channels. A channel's output, as
+     * on_output; channel 0 is the first shell. Fewer bytes taken pauses that
+     * channel alone, until mr_ssh_channel_resume_output. */
+    size_t (*on_channel_output)(void *context, uint32_t channel_id, const uint8_t *bytes, size_t length);
+    /* A channel opened, ended or was refused. The first shell's state is
+     * reported here too, as channel 0, besides on_state. */
+    void (*on_channel_state)(void *context, uint32_t channel_id, mr_ssh_channel_state state, int32_t detail);
 } mr_ssh_callbacks;
 
 uint32_t mr_ssh_bridge_abi_version(void);
 
 /* Copies config and callbacks. on_state, on_host_key, on_auth_request and
- * on_output are required. */
+ * on_output (or on_channel_output) are required. */
 mr_ssh_status mr_ssh_session_create(
     const mr_ssh_config *config,
     const mr_ssh_callbacks *callbacks,
@@ -279,14 +331,32 @@ mr_ssh_status mr_ssh_session_answer_keyboard_interactive(
 /* Rejects a host key, or abandons the sign-in. */
 mr_ssh_status mr_ssh_session_cancel_challenge(mr_ssh_session *session, uint64_t challenge_id);
 
-/* Queues bytes for the shell, in order. MR_SSH_ERROR_QUEUE_FULL takes none
- * of them. */
+/* Queues bytes for the first shell, in order. MR_SSH_ERROR_QUEUE_FULL takes
+ * none of them. */
 mr_ssh_status mr_ssh_session_write(mr_ssh_session *session, const uint8_t *bytes, size_t length);
 mr_ssh_status mr_ssh_session_resize(
     mr_ssh_session *session, uint16_t columns, uint16_t rows,
     uint16_t pixel_width, uint16_t pixel_height);
 /* After on_output took fewer bytes than offered. */
 mr_ssh_status mr_ssh_session_resume_output(mr_ssh_session *session);
+
+/* ABI 4. Queues a channel to open on the connection: at once when connected,
+ * else once signed in. *out_id names it from here on (never 0, which is the
+ * first shell). Its on_channel_state OPEN comes first, then its output; or
+ * FAILED. MR_SSH_ERROR_QUEUE_FULL: MR_SSH_MAX_CHANNELS are open. */
+mr_ssh_status mr_ssh_session_open_channel(
+    mr_ssh_session *session, const mr_ssh_channel_config *config, uint32_t *out_id);
+/* The same as the first shell's, for any channel. A channel that has ended,
+ * or never was, returns MR_SSH_ERROR_INVALID_ARGUMENT. Input queued before
+ * OPEN is sent once it is. */
+mr_ssh_status mr_ssh_channel_write(mr_ssh_session *session, uint32_t channel_id, const uint8_t *bytes, size_t length);
+mr_ssh_status mr_ssh_channel_resize(
+    mr_ssh_session *session, uint32_t channel_id, uint16_t columns, uint16_t rows,
+    uint16_t pixel_width, uint16_t pixel_height);
+mr_ssh_status mr_ssh_channel_resume_output(mr_ssh_session *session, uint32_t channel_id);
+/* Closes a channel, as a closed tab: its program gets a hang-up. Its CLOSED
+ * follows. Closing the last shell ends the session. */
+mr_ssh_status mr_ssh_channel_close(mr_ssh_session *session, uint32_t channel_id);
 /* Idempotent. Wakes a pending challenge, a name lookup and the I/O wait. */
 mr_ssh_status mr_ssh_session_request_stop(mr_ssh_session *session);
 
