@@ -5,6 +5,13 @@ import SwiftTerm
 import SessionCore
 import SSHProtocol
 
+/// tmux control mode, as a terminal's output carries it.
+enum TmuxControlEvent {
+    case began
+    case line(String)
+    case ended
+}
+
 /// What the workspace tells a terminal's view on each update: whether it
 /// takes input, what its pane is, and where its requests go.
 struct TerminalViewConfiguration {
@@ -23,6 +30,7 @@ struct TerminalViewConfiguration {
     /// The keyboard came to a pane that does not type: give it to the one
     /// that does.
     var onKeyboardMisplaced: () -> Void = {}
+    var onControlMode: (TmuxControlEvent) -> Void = { _ in }
 
     func apply(to view: SessionTerminalView) {
         view.accessibilityIdentifier = accessibilityID
@@ -35,6 +43,7 @@ struct TerminalViewConfiguration {
         view.onFocus = onFocus
         view.onCommand = onCommand
         view.onKeyboardMisplaced = onKeyboardMisplaced
+        view.onControlMode = onControlMode
         view.isFocusedPane = isFocused
         // Focus moved here by a shortcut or the bar: the keyboard follows,
         // if a terminal had it.
@@ -241,6 +250,10 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
     var onFocus: () -> Void = {}
     var onCommand: (TerminalLayoutCommand) -> Void = { _ in }
     var onKeyboardMisplaced: () -> Void = {}
+    /// tmux control mode began in this terminal, sent a line, or ended.
+    var onControlMode: (TmuxControlEvent) -> Void = { _ in }
+    /// Finds control mode in the output (docs/ssh-design.md 16.5).
+    private var controlStream = TmuxControlStream()
     /// Its pane is the one that types.
     var isFocusedPane = true
     /// The terminal with the keyboard, if any.
@@ -320,7 +333,14 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
             let bytes = channel.output.drain(maximum: Self.drainChunk)
             if bytes.isEmpty { return }
             feeding = true
-            feed(byteArray: bytes[...])
+            for piece in controlStream.feed(bytes) {
+                switch piece {
+                case .terminal(let shown): feed(byteArray: shown[...])
+                case .began: onControlMode(.began)
+                case .line(let line): onControlMode(.line(line))
+                case .ended: onControlMode(.ended)
+                }
+            }
             feeding = false
         }
         // Over budget with output left: come back on the next turn.

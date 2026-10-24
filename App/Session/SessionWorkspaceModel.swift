@@ -102,6 +102,12 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
     @ObservationIgnored private(set) var terminalChannels: [TerminalID: TerminalChannel] = [:]
     /// How they are arranged: tabs, and panes in each.
     private(set) var terminalTabs = TerminalTabsState()
+    /// tmux control mode in one of the terminals: its windows and panes
+    /// stand in for the app's tabs and panes while it lasts.
+    private(set) var tmuxControl: TmuxControlClient?
+    /// Each tmux pane's view, kept as the terminals' are.
+    @ObservationIgnored var tmuxPaneViews: [Int: SessionTerminalView] = [:]
+
     /// The terminal that types, for the menu's font size and clear commands.
     var terminalView: SessionTerminalView? {
         terminalTabs.focusedTerminal.flatMap { terminalViews[$0] }
@@ -368,6 +374,27 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
         }
     }
 
+    func controlMode(_ event: TmuxControlEvent, in id: TerminalID) {
+        switch event {
+        case .began:
+            guard let channel = terminalChannels[id] else { return }
+            endControlMode()
+            tmuxControl = TmuxControlClient(controlTerminal: id) { line in
+                channel.input.send(Array((line + "\n").utf8))
+            }
+        case .line(let line):
+            tmuxControl?.handle(line)
+        case .ended:
+            endControlMode()
+        }
+    }
+
+    private func endControlMode() {
+        for view in tmuxPaneViews.values { view.detach() }
+        tmuxPaneViews.removeAll()
+        tmuxControl = nil
+    }
+
     func focusTerminal(_ id: TerminalID) {
         guard terminalTabs.focusedTerminal != id else { return }
         terminalTabs.focus(id)
@@ -491,6 +518,9 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
             }
             if state == .failed || state == .disconnected {
                 credentialToSaveOnConnect = nil
+                // tmux carries on without this client; a reconnect attaches
+                // again.
+                endControlMode()
                 // Nothing takes typing now, and the keyboard would cover the
                 // banner's reconnect button.
                 terminalView?.resignFirstResponder()

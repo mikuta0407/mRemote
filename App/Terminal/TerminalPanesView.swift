@@ -23,6 +23,28 @@ struct TerminalPanesView: View {
     }
 
     var body: some View {
+        if let client = model.tmuxControl {
+            ZStack {
+                // The shell running tmux -CC stays in the hierarchy, out of
+                // sight: its output carries control mode.
+                hiddenControlTerminal(client.controlTerminal)
+                TmuxControlView(model: model, client: client, terminal: terminal,
+                                settings: settings, isInputEnabled: isInputEnabled)
+            }
+        } else {
+            panes
+        }
+    }
+
+    /// Kept fed while control mode lasts: drawn nowhere, as the view of a
+    /// tab not shown is.
+    @ViewBuilder
+    private func hiddenControlTerminal(_ id: TerminalID) -> some View {
+        Color.clear.frame(width: 0, height: 0)
+            .onAppear { _ = views(for: [id], focused: id) }
+    }
+
+    private var panes: some View {
         GeometryReader { proxy in
             let showsSplits = proxy.size.width >= Self.splitWidth
             VStack(spacing: 0) {
@@ -71,7 +93,8 @@ struct TerminalPanesView: View {
                 onTitle: { title in model.terminalTitles[id] = title },
                 onFocus: { model.focusTerminal(id) },
                 onCommand: { command in Task { await model.perform(command, from: id) } },
-                onKeyboardMisplaced: { model.terminalView?.restoreFirstResponder() }
+                onKeyboardMisplaced: { model.terminalView?.restoreFirstResponder() },
+                onControlMode: { event in model.controlMode(event, in: id) }
             ).apply(to: view)
             views[id] = view
         }

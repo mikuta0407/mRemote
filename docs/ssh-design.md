@@ -468,3 +468,12 @@ RDP と方針が逆になる点が多いので明記する。
 - 「使わない」以外では `defer_shell` で接続し、シェルを開く前に exec で `tmux list-sessions` を実行する。非対話シェルの PATH に無いことが多いので Homebrew などの場所を足す。終了コード 127 は tmux なし。
 - 聞く設定でセッションがあれば、1 つだけでもシートで聞く（セッション一覧、Control Mode の切替、新しいセッション、使わない）。選んだ tmux コマンドを最初のシェルに打ち込む。tmux に入ったときは「接続後に実行するコマンド」は送らない。
 - 試験: tmux を起動・終了する試験は開発機では動かさない。開発機の tmux（開発者自身や Claude Code が動いている）に届くため。`MR_SSH_LINUX=1` で、専用の colima プロファイル上の Linux コンテナ（`bridge/ssh/tests/linux-host`、sshd + tmux）に向けて動かす。
+
+### 16.5 Control Mode（tmux -CC）
+
+- 端末の出力に DCS `ESC P 1000 p` が来たら Control Mode とみなす（`TmuxControlStream`）。tmux を自分で `tmux -CC` と打っても同じく切り替わる。`%exit` の後の `ESC \` で通常の端末に戻る。
+- `TmuxControlClient` が行を解釈する。返事は `%begin`/`%end` の組で、送った順に対応させる（フラグ 1 のものだけ。attach 自体の返事はフラグ 0）。`%session-changed` で接続を知り、`refresh-client -C` で大きさを伝え、`list-windows` で窓とレイアウトを得る。
+- tmux の窓をタブ、ペインをペインとして表示する。ペインの位置と大きさは tmux のレイアウト（セル単位）どおりに置き、ペイン間の 1 セルは tmux の境界線。セルの大きさは SwiftTerm と同じ計算で求める。表示領域に入るセル数をクライアントの大きさとして送る。
+- ペインごとに端末ビューを持ち、`%output` を流し込む。新しく見るペインは `capture-pane -e -J`（2000 行）とカーソル位置で埋め、その間の出力は後ろで待たせる。入力は `send-keys -H`（16 進）で送る。
+- 分割・新しい窓・閉じる・切り離し（detach）は tmux のコマンドとして送る。切り離した後でもう一度 attach すれば、窓・ペイン・履歴がそのまま戻る。
+- 試験: Linux コンテナでのみ動かす UI 試験（attach、入力、分割、新しい窓、detach、再 attach で履歴が戻る）。

@@ -167,6 +167,85 @@ final class LiveSSHUITests: XCTestCase {
         shot("p2-focus-left")
     }
 
+    private func value(of identifier: String) -> String {
+        ((element(identifier).value as? String) ?? "").replacingOccurrences(of: "\u{0}", with: "")
+    }
+
+    private func wait(for needle: String, in identifier: String, timeout: TimeInterval = 15) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if value(of: identifier).contains(needle) { return true }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        return false
+    }
+
+    /// tmux control mode (docs/ssh-design.md 16.5), against the Linux
+    /// container only: it starts and ends tmux sessions, which on this Mac
+    /// could be the developer's own.
+    func testTmuxControlModeShowsWindowsAndPanes() throws {
+        guard environment["MREMOTE_UITEST_TMUX_HOST"] == "isolated" else {
+            throw XCTSkip("needs MR_SSH_LINUX=1 (a host of its own for tmux)")
+        }
+        guard let port = environment["MREMOTE_UITEST_SSH_PORT"],
+              let user = environment["MREMOTE_UITEST_SSH_USER"],
+              let key = environment["MREMOTE_UITEST_SSH_KEY"] else {
+            throw XCTSkip("no test sshd")
+        }
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments.append("-mremote-ui-testing")
+        app.launchEnvironment["MREMOTE_UITEST_SSH_PORT"] = port
+        app.launchEnvironment["MREMOTE_UITEST_SSH_USER"] = user
+        app.launchEnvironment["MREMOTE_UITEST_SSH_KEY"] = key
+        app.launchEnvironment["MREMOTE_UITEST_SSH_TMUX"] = "auto-cc:mr-cc"
+        app.launch()
+        element("profile-row-テスト SSH").tap()
+        let trust = element("host-key-trust-always")
+        if trust.waitForExistence(timeout: 10) { trust.tap() }
+
+        let bar = element("tmux-window-bar")
+        XCTAssertTrue(bar.waitForExistence(timeout: 20), "control mode shows tmux's windows\n\(app.debugDescription)")
+        let pane = element("tmux-pane-active")
+        XCTAssertTrue(pane.waitForExistence(timeout: 10), "and its pane")
+        pane.tap()
+        app.typeText("echo cc-$((3*3))\n")
+        XCTAssertTrue(wait(for: "cc-9", in: "tmux-pane-active"), "typing reaches the pane\n\(value(of: "tmux-pane-active"))")
+        shot("c1-control-mode")
+
+        // A pane beside it, made by tmux.
+        element("tmux-menu").tap()
+        element("tmux-split-horizontal").tap()
+        XCTAssertTrue(element("tmux-pane").waitForExistence(timeout: 10), "tmux's split shows as two panes")
+        element("tmux-pane-active").tap()
+        app.typeText("echo second-$((4*4))\n")
+        XCTAssertTrue(wait(for: "second-16", in: "tmux-pane-active"), "the new pane types\n\(value(of: "tmux-pane-active"))")
+        XCTAssertTrue(value(of: "tmux-pane").contains("cc-9"), "the first pane keeps its screen")
+        shot("c2-split")
+
+        // A second window, as a second tab.
+        element("tmux-menu").tap()
+        element("tmux-new-window").tap()
+        XCTAssertTrue(element("tmux-window-1").waitForExistence(timeout: 10), "a new tmux window is a tab")
+        element("tmux-window-0").tap()
+        XCTAssertTrue(element("tmux-pane").waitForExistence(timeout: 10), "back to the split window")
+
+        // Detached, the shell is back; attached again, all of it returns.
+        element("tmux-menu").tap()
+        element("tmux-detach").tap()
+        XCTAssertTrue(bar.waitForNonExistence(timeout: 10), "detaching leaves control mode")
+        // Control mode prints no "[detached]": the shell's prompt is back.
+        XCTAssertTrue(element("terminal-surface").waitForExistence(timeout: 10), "the shell is back")
+        element("terminal-surface").tap()
+        app.typeText("tmux -CC attach -t mr-cc\n")
+        XCTAssertTrue(bar.waitForExistence(timeout: 15), "attached again")
+        XCTAssertTrue(element("tmux-window-1").waitForExistence(timeout: 10), "with both windows")
+        element("tmux-window-0").tap()
+        XCTAssertTrue(wait(for: "cc-9", in: "tmux-pane-active") || wait(for: "cc-9", in: "tmux-pane"),
+                      "and the panes' history")
+        shot("c3-attached-again")
+    }
+
     func testConnectTrustTypeAndUseTheMenu() throws {
         guard let port = environment["MREMOTE_UITEST_SSH_PORT"],
               let user = environment["MREMOTE_UITEST_SSH_USER"],

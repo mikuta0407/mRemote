@@ -85,7 +85,8 @@ enum UITestConfiguration {
                 account: RemoteAccount(username: user),
                 configuration: .ssh(SSHConfiguration(
                     authentication: SSHAuthentication(keyID: metadata.id),
-                    startupCommand: environment["MREMOTE_UITEST_SSH_STARTUP"]))))
+                    startupCommand: environment["MREMOTE_UITEST_SSH_STARTUP"],
+                    tmux: Self.tmuxSettings(environment["MREMOTE_UITEST_SSH_TMUX"])))))
             factories.append(SSHSessionFactory(credentials: credentials, knownHosts: knownHosts, keys: keys))
         }
         return AppEnvironment(
@@ -96,5 +97,20 @@ enum UITestConfiguration {
             sshKeys: keys,
             factories: SessionFactoryRegistry(factories: factories)
         )
+    }
+
+    /// MREMOTE_UITEST_SSH_TMUX: off (when unset - a run against this Mac
+    /// must not look at the developer's own tmux), ask, ask-cc, auto:NAME
+    /// or auto-cc:NAME.
+    private static func tmuxSettings(_ value: String?) -> SSHTmuxSettings {
+        let parts = (value ?? "off").split(separator: ":", maxSplits: 1).map(String.init)
+        let name = parts.count > 1 ? parts[1] : nil
+        switch parts.first {
+        case "ask": return SSHTmuxSettings(attach: .ask)
+        case "ask-cc": return SSHTmuxSettings(attach: .ask, controlMode: true)
+        case "auto": return SSHTmuxSettings(attach: .automatic, sessionName: name)
+        case "auto-cc": return SSHTmuxSettings(attach: .automatic, sessionName: name, controlMode: true)
+        default: return SSHTmuxSettings(attach: .off)
+        }
     }
 }
