@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ObjectiveC
 import SwiftTerm
 import SessionCore
 import SSHProtocol
@@ -70,6 +71,9 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
     private var detached = false
     private var resizeTask: Task<Void, Never>?
     private var fontSize: CGFloat
+    /// The IME's text being composed, drawn over the cursor: SwiftTerm keeps
+    /// it to itself until it is committed.
+    private let compositionLabel = UILabel()
 
     /// One slice of output per run loop turn, so a `cat` of a large file
     /// cannot freeze the UI (docs/ssh-design.md 6.3).
@@ -92,6 +96,12 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
         inputAccessoryView = TerminalKeyBar(terminal: self)
         #endif
         applyTheme()
+        Self.installCompositionHooks
+        compositionLabel.isHidden = true
+        compositionLabel.numberOfLines = 0
+        compositionLabel.isAccessibilityElement = false
+        compositionLabel.accessibilityIdentifier = "terminal-composition"
+        addSubview(compositionLabel)
         session.terminalOutput.setReadableHandler { [weak self] in
             DispatchQueue.main.async { self?.drain() }
         }
@@ -304,6 +314,90 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
         } else {
             send()
         }
+    }
+
+    // MARK: Composition
+
+    /// SwiftTerm's `setMarkedText` and `unmarkText` are public but not
+    /// open, so they cannot be overridden: this subclass gets its own
+    /// implementations at run time, which call SwiftTerm's and then redraw
+    /// the composition.
+    private static let installCompositionHooks: Void = {
+        let setMarked = #selector(UITextInput.setMarkedText(_:selectedRange:))
+        if let method = class_getInstanceMethod(TerminalView.self, setMarked) {
+            typealias Original = @convention(c) (AnyObject, Selector, NSString?, NSRange) -> Void
+            let original = unsafeBitCast(method_getImplementation(method), to: Original.self)
+            let hook: @convention(block) (SessionTerminalView, NSString?, NSRange) -> Void = { view, text, range in
+                original(view, setMarked, text, range)
+                view.updateComposition()
+            }
+            class_addMethod(SessionTerminalView.self, setMarked,
+                            imp_implementationWithBlock(hook), method_getTypeEncoding(method))
+        }
+        let unmark = #selector(UITextInput.unmarkText)
+        if let method = class_getInstanceMethod(TerminalView.self, unmark) {
+            typealias Original = @convention(c) (AnyObject, Selector) -> Void
+            let original = unsafeBitCast(method_getImplementation(method), to: Original.self)
+            let hook: @convention(block) (SessionTerminalView) -> Void = { view in
+                original(view, unmark)
+                view.updateComposition()
+            }
+            class_addMethod(SessionTerminalView.self, unmark,
+                            imp_implementationWithBlock(hook), method_getTypeEncoding(method))
+        }
+    }()
+
+    override func insertText(_ text: String) {
+        super.insertText(text)
+        updateComposition()
+    }
+
+    override func deleteBackward() {
+        super.deleteBackward()
+        updateComposition()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        updateComposition()
+        return resigned
+    }
+
+    /// Shows the marked text where it will be typed, underlined, with the
+    /// clause being converted underlined thicker, as a Mac's terminal does.
+    private func updateComposition() {
+        guard let marked = markedTextRange, let text = self.text(in: marked), !text.isEmpty, isFirstResponder else {
+            compositionLabel.isHidden = true
+            return
+        }
+        let font = Self.font(size: fontSize)
+        let attributed = NSMutableAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: nativeForegroundColor,
+            .backgroundColor: nativeBackgroundColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ])
+        if let selected = selectedTextRange, !selected.isEmpty {
+            let start = offset(from: marked.start, to: selected.start)
+            let length = offset(from: selected.start, to: selected.end)
+            let range = NSRange(location: start, length: length)
+            if range.location >= 0, NSMaxRange(range) <= attributed.length {
+                attributed.addAttribute(.underlineStyle, value: NSUnderlineStyle.thick.rawValue, range: range)
+            }
+        }
+        compositionLabel.attributedText = attributed
+        compositionLabel.backgroundColor = nativeBackgroundColor
+        // SwiftTerm's caret is the one place that knows the cursor's cell.
+        let caret = subviews.first { String(describing: type(of: $0)) == "CaretView" }?.frame
+            ?? CGRect(x: 0, y: contentOffset.y, width: 0, height: font.lineHeight)
+        let width = bounds.width
+        let size = compositionLabel.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        // On the cursor's line; moved left when it would run off the edge,
+        // and wrapped from the left when it is wider than the screen.
+        let x = max(0, min(caret.minX, width - size.width))
+        compositionLabel.frame = CGRect(x: x, y: caret.minY, width: min(size.width, width), height: size.height)
+        bringSubviewToFront(compositionLabel)
+        compositionLabel.isHidden = false
     }
 
     // MARK: TerminalViewDelegate

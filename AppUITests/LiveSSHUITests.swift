@@ -25,7 +25,8 @@ final class LiveSSHUITests: XCTestCase {
     }
 
     private func terminalText() -> String {
-        (element("terminal-surface").value as? String) ?? ""
+        // A wide character's second cell reads back as NUL.
+        ((element("terminal-surface").value as? String) ?? "").replacingOccurrences(of: "\u{0}", with: "")
     }
 
     private func waitForTerminal(containing needle: String, timeout: TimeInterval = 15) -> Bool {
@@ -73,6 +74,23 @@ final class LiveSSHUITests: XCTestCase {
         app.typeText("echo typed-$((7*6)) あいう\n")
         XCTAssertTrue(waitForTerminal(containing: "typed-42"), "typing reaches the shell\n\(terminalText())")
         shot("3-terminal")
+
+        // Japanese being composed is shown at the cursor, and reaches the
+        // shell only when committed. Needs the kana keyboard, as on a
+        // Japanese simulator; skipped with another.
+        let ka = app.keys["か"]
+        if ka.exists {
+            app.typeText("echo ")
+            ka.tap()
+            app.keys["な"].tap()
+            shot("3c-composing")
+            XCTAssertFalse(terminalText().contains("かな"), "composed text is not sent before it is committed")
+            let commit = app.buttons["確定"].exists ? app.buttons["確定"] : app.keys["確定"]
+            if commit.exists { commit.tap() }
+            app.typeText("\n")
+            XCTAssertTrue(waitForTerminal(containing: "\nかな"), "the committed text reaches the shell\n\(terminalText())")
+            shot("3d-committed")
+        }
 
         // A screenful later the prompt is on the bottom row: the terminal
         // ends above the keyboard and its key bar, not behind them.
