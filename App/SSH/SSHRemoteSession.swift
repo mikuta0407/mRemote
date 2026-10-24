@@ -90,6 +90,11 @@ actor SSHRemoteSession: TerminalSession {
     /// The shell opened on a password, so a password worth keeping.
     private(set) var signedInWithPassword = false
     private var signInExhausted = false
+    /// Signed in on this attempt's connection, whether or not a shell is
+    /// open yet.
+    private var bridgeConnected = false
+    /// This attempt looks for tmux before opening the first shell.
+    private var detectsTmux = false
     private var terminationCause: Termination?
 
     private enum Termination {
@@ -222,6 +227,10 @@ actor SSHRemoteSession: TerminalSession {
             resumeAttempt()
             native?.answerKeyboardInteractive(id, answers: answers)
 
+        case let (.tmuxSession, nil, .tmux(choice)):
+            resumeAttempt()
+            openFirstShell(command: TmuxCommands.command(for: choice) ?? settings.startupCommand)
+
         default:
             throw StaleChallengeError(challengeID: challengeID)
         }
@@ -267,7 +276,7 @@ actor SSHRemoteSession: TerminalSession {
     }
 
     func runCommand(_ command: String) async -> TerminalCommandResult? {
-        guard machine.state == .connected || machine.state == .awaitingUser, let native else { return nil }
+        guard bridgeConnected, let native else { return nil }
         let output = SSHCommandOutput()
         guard let channel = native.openCommand(command, output: output) else { return nil }
         return await withCheckedContinuation { waiter in
@@ -322,8 +331,13 @@ actor SSHRemoteSession: TerminalSession {
         let first = terminals[0]
 
         let session = SSHNativeSession(label: "com.mikuta0407.mRemote.ssh.\(machine.generation.rawValue)")
-        session.route(0, to: first.channel.output)
-        first.native = 0
+        // Looking for tmux first: no shell until it is known which to open.
+        detectsTmux = settings.tmux.attach != .off
+        bridgeConnected = false
+        if !detectsTmux {
+            session.route(0, to: first.channel.output)
+            first.native = 0
+        }
         native = session
         let events = session.events
         pumpTask = Task { [weak self] in
@@ -340,7 +354,8 @@ actor SSHRemoteSession: TerminalSession {
             size: first.size,
             keepAliveSeconds: settings.keepAliveSeconds,
             forwards: Array(settings.portForwards.prefix(Int(MR_SSH_MAX_FORWARDS))),
-            proxy: configuration.proxy.map { ($0.host, $0.port) }
+            proxy: configuration.proxy.map { ($0.host, $0.port) },
+            deferShell: detectsTmux
         ))
     }
 
@@ -469,6 +484,11 @@ actor SSHRemoteSession: TerminalSession {
             privateKey.withUnsafeMutableBytes { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) }
             privateKey = []
             saveSecretsAfterSignIn()
+            bridgeConnected = true
+            if detectsTmux {
+                Task { await chooseTmuxSession() }
+                return
+            }
             if let native, let first = terminals.first, first.native == 0 {
                 first.input.attach(native, channel: 0)
                 if let command = settings.startupCommand {
@@ -497,6 +517,46 @@ actor SSHRemoteSession: TerminalSession {
             terminationCause = .failed(bridgeFailure.sessionError(detail: detail) ?? .internalFailure(detail: "ssh"))
         default:
             break
+        }
+    }
+
+    // MARK: - tmux (docs/ssh-design.md section 16.4)
+
+    /// Signed in with no shell yet: what tmux has decides what the first
+    /// shell runs.
+    private func chooseTmuxSession() async {
+        let listing = await runCommand(TmuxCommands.listSessions)
+        guard bridgeConnected else { return }
+        let sessions = listing?.exitStatus == 0 ? TmuxCommands.parseSessions(listing?.output ?? "") : []
+        let hasTmux = listing != nil && listing?.exitStatus != 127
+        sshLog.info("tmux: \(hasTmux ? "found" : "none", privacy: .public), \(sessions.count, privacy: .public) session(s)")
+        switch settings.tmux.attach {
+        case .automatic where hasTmux:
+            let name = settings.tmux.effectiveSessionName
+            openFirstShell(command: TmuxCommands.command(for: .new(name, controlMode: settings.tmux.controlMode)))
+        case .ask where !sessions.isEmpty:
+            raise(.tmuxSession(TmuxSessionChallenge(
+                generation: machine.generation, host: configuration.endpoint.host,
+                sessions: sessions, prefersControlMode: settings.tmux.controlMode)))
+        default:
+            openFirstShell(command: settings.startupCommand)
+        }
+    }
+
+    /// The first terminal's shell, then the others' after a reconnect; then
+    /// the session is up. `command` is typed into the first.
+    private func openFirstShell(command: String?) {
+        guard let native, let first = terminals.first else { return }
+        guard openShell(for: first, on: native), let channel = first.native else {
+            terminationCause = .failed(.internalFailure(detail: String(localized: "シェルを開けませんでした")))
+            native.requestStop()
+            return
+        }
+        if let command { _ = native.write(channel, Array((command + "\r").utf8)) }
+        for terminal in terminals.dropFirst() { openShell(for: terminal, on: native) }
+        if machine.state == .awaitingUser { resumeAttempt() }
+        if machine.transition(to: .connected) != nil {
+            emit(.stateChanged(machine.state, generation: machine.generation))
         }
     }
 
@@ -541,6 +601,7 @@ actor SSHRemoteSession: TerminalSession {
     /// that publishes how the attempt ended.
     private func finishAttempt() {
         native = nil
+        bridgeConnected = false
         for terminal in terminals {
             terminal.native = nil
             terminal.input.attach(nil)

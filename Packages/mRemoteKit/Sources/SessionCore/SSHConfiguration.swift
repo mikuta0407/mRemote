@@ -130,6 +130,9 @@ public struct SSHConfiguration: Hashable, Sendable, Codable {
     /// a reconnect is a new shell (docs/ssh-design.md section 9).
     public var reconnectPolicy: Inheritable<ReconnectPolicy>
     public var portForwards: [SSHPortForward]?
+    /// What to do about tmux on the host (docs/ssh-design.md section 16.4).
+    /// Nil is the default: ask when it has sessions.
+    public var tmux: SSHTmuxSettings?
 
     public static let defaultPort: UInt16 = 22
     public static let defaultTerminalType = "xterm-256color"
@@ -156,7 +159,8 @@ public struct SSHConfiguration: Hashable, Sendable, Codable {
         exitBehavior: Inheritable<ShellExitBehavior> = .inherit,
         clipboardPolicy: Inheritable<ClipboardPolicy> = .inherit,
         reconnectPolicy: Inheritable<ReconnectPolicy> = .explicit(.disabled),
-        portForwards: [SSHPortForward]? = nil
+        portForwards: [SSHPortForward]? = nil,
+        tmux: SSHTmuxSettings? = nil
     ) {
         self.authentication = authentication
         self.startupCommand = startupCommand
@@ -170,6 +174,40 @@ public struct SSHConfiguration: Hashable, Sendable, Codable {
         self.clipboardPolicy = clipboardPolicy
         self.reconnectPolicy = reconnectPolicy
         self.portForwards = portForwards
+        self.tmux = tmux
+    }
+}
+
+/// tmux on the host: whether to look for its sessions when connecting, and
+/// how to go back into one.
+public struct SSHTmuxSettings: Hashable, Sendable, Codable {
+    public enum Attach: String, Hashable, Sendable, Codable, CaseIterable {
+        /// List its sessions and ask, even when there is only one.
+        case ask
+        /// Straight into `sessionName`, made if it is not there.
+        case automatic
+        /// Leave tmux alone: a plain shell.
+        case off
+    }
+
+    public var attach: Attach
+    /// For `automatic`. Nil or empty is "main".
+    public var sessionName: String?
+    /// Control mode (`tmux -CC`): tmux's windows and panes as the app's tabs
+    /// and panes.
+    public var controlMode: Bool
+
+    public static let defaultSessionName = "main"
+
+    public var effectiveSessionName: String {
+        let trimmed = sessionName?.trimmingCharacters(in: .whitespaces) ?? ""
+        return trimmed.isEmpty ? Self.defaultSessionName : trimmed
+    }
+
+    public init(attach: Attach = .ask, sessionName: String? = nil, controlMode: Bool = false) {
+        self.attach = attach
+        self.sessionName = sessionName
+        self.controlMode = controlMode
     }
 }
 
@@ -186,6 +224,7 @@ public struct EffectiveSSHSettings: Hashable, Sendable {
     public let keepAliveSeconds: Int
     public let exitBehavior: ShellExitBehavior
     public let portForwards: [SSHPortForward]
+    public let tmux: SSHTmuxSettings
 
     public init(
         authentication: SSHAuthentication,
@@ -198,8 +237,10 @@ public struct EffectiveSSHSettings: Hashable, Sendable {
         scrollbackLines: Int = TerminalDefaults.default.scrollbackLines,
         keepAliveSeconds: Int = TerminalDefaults.default.keepAliveSeconds,
         exitBehavior: ShellExitBehavior = TerminalDefaults.default.exitBehavior,
-        portForwards: [SSHPortForward] = []
+        portForwards: [SSHPortForward] = [],
+        tmux: SSHTmuxSettings = SSHTmuxSettings(attach: .off)
     ) {
+        self.tmux = tmux
         self.authentication = authentication
         self.startupCommand = startupCommand
         self.terminalType = terminalType

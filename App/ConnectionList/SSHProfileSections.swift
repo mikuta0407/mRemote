@@ -72,7 +72,38 @@ struct SSHProfileSections: View {
         } header: {
             Text("端末")
         } footer: {
-            Text("iPhone/iPad をしばらく閉じると接続は切れ、シェルも終わります。tmux や screen を起動しておくと、つなぎ直したときに作業の続きから始められます。")
+            Text("iPhone/iPad をしばらく閉じると接続は切れ、シェルも終わります。tmux や screen の中で作業しておくと、つなぎ直したときに続きから始められます。tmux のセッションに入ったときは、このコマンドは実行しません。")
+        }
+
+        Section {
+            Picker("接続したとき", selection: $model.tmuxAttach) {
+                Text("セッションがあれば聞く").tag(SSHTmuxSettings.Attach.ask)
+                Text("決まったセッションに入る").tag(SSHTmuxSettings.Attach.automatic)
+                Text("使わない").tag(SSHTmuxSettings.Attach.off)
+            }
+            .accessibilityIdentifier("profile-ssh-tmux-attach")
+            if model.tmuxAttach == .automatic {
+                TextField("セッション名", text: $model.tmuxSessionName, prompt: Text(verbatim: SSHTmuxSettings.defaultSessionName))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.system(.body, design: .monospaced))
+                    .accessibilityIdentifier("profile-ssh-tmux-name")
+            }
+            if model.tmuxAttach != .off {
+                Toggle("Control Mode（tmux -CC）", isOn: $model.tmuxControlMode)
+                    .accessibilityIdentifier("profile-ssh-tmux-control-mode")
+            }
+        } header: {
+            Text("tmux")
+        } footer: {
+            switch model.tmuxAttach {
+            case .ask:
+                Text("接続すると tmux のセッションを探し、あればどれに戻るか（または使わないか）を聞きます。1 つしかなくても聞きます。")
+            case .automatic:
+                Text("接続すると、このセッションに入ります。なければ作ります。")
+            case .off:
+                Text("tmux は探しません。")
+            }
         }
 
         Section {

@@ -152,7 +152,8 @@ extension EffectiveProfileResolver {
                                  TerminalDefaults.scrollbackRange.upperBound),
             keepAliveSeconds: max(0, ssh.keepAliveSeconds.resolved(default: terminal.keepAliveSeconds)),
             exitBehavior: ssh.exitBehavior.resolved(default: terminal.exitBehavior),
-            portForwards: ssh.portForwards ?? []
+            portForwards: ssh.portForwards ?? [],
+            tmux: ssh.tmux ?? SSHTmuxSettings()
         )
         // The RDP fields take the global defaults: nothing reads them for an
         // SSH connection, and a real value is safer than a sentinel.

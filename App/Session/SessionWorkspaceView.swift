@@ -167,6 +167,9 @@ struct SessionWorkspaceView: View {
                 onPassphrase: { passphrase, save in
                     Task { await model.answer(.passphrase(passphrase, save: save)) }
                 },
+                onTmux: { choice in
+                    Task { await model.answer(.tmux(choice)) }
+                },
                 asksForDomain: model.configuration.protocolKind == .rdp,
                 onCancel: {
                     Task { await model.answer(.cancel) }

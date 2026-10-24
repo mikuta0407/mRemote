@@ -251,7 +251,7 @@ actor RDPRemoteSession: DesktopSession, AudioCapableSession, ClipboardCapableSes
                 emit(.stateChanged(machine.state, generation: machine.generation))
             }
 
-        case .keyboardInteractive, .passphrase:
+        case .keyboardInteractive, .passphrase, .tmux:
             // SSH answers; an RDP session never asks these.
             throw StaleChallengeError(challengeID: challengeID)
         }

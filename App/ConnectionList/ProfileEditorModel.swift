@@ -42,6 +42,9 @@ final class ProfileEditorModel: Identifiable {
     var shellExitBehavior: Inheritable<ShellExitBehavior> = .inherit
     var sshReconnectPolicy: Inheritable<ReconnectPolicy> = .explicit(.disabled)
     var portForwards: [SSHPortForward] = []
+    var tmuxAttach = SSHTmuxSettings.Attach.ask
+    var tmuxSessionName = ""
+    var tmuxControlMode = false
 
     var displayName: String
     var host: String
@@ -179,6 +182,10 @@ final class ProfileEditorModel: Identifiable {
                 clipboardPolicy = ssh.clipboardPolicy
                 sshReconnectPolicy = ssh.reconnectPolicy
                 portForwards = ssh.portForwards ?? []
+                let tmux = ssh.tmux ?? SSHTmuxSettings()
+                tmuxAttach = tmux.attach
+                tmuxSessionName = tmux.sessionName ?? ""
+                tmuxControlMode = tmux.controlMode
             }
             if let folder = rdp.sharedFolder {
                 switch folder.location {
@@ -297,6 +304,11 @@ final class ProfileEditorModel: Identifiable {
         ssh.clipboardPolicy = clipboardPolicy
         ssh.reconnectPolicy = sshReconnectPolicy
         ssh.portForwards = portForwards.isEmpty ? nil : portForwards
+        let tmuxName = tmuxSessionName.trimmingCharacters(in: .whitespaces)
+        let tmux = SSHTmuxSettings(attach: tmuxAttach, sessionName: tmuxName.isEmpty ? nil : tmuxName,
+                                   controlMode: tmuxControlMode)
+        // The default is kept as nil, as a profile from before had it.
+        ssh.tmux = tmux == SSHTmuxSettings() ? nil : tmux
         return ssh
     }
 

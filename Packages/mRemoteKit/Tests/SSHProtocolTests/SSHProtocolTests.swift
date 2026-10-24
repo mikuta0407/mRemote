@@ -275,3 +275,42 @@ enum HostKeyFingerprintTests {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
+
+final class TmuxCommandsTests: XCTestCase {
+    func testSessionsParseMostRecentFirst() {
+        let output = "3 0 1700000000 main\n1 2 1700000500 work space\nbroken line\n1 0 5 \n"
+        let sessions = TmuxCommands.parseSessions(output)
+        XCTAssertEqual(sessions.map(\.name), ["work space", "main"])
+        XCTAssertEqual(sessions.first?.windows, 1)
+        XCTAssertEqual(sessions.first?.attachedClients, 2)
+        XCTAssertEqual(sessions.last?.lastActivity, Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertTrue(TmuxCommands.parseSessions("").isEmpty)
+    }
+
+    func testCommandsQuoteTheName() {
+        XCTAssertEqual(TmuxCommands.quote("it's"), "'it'\\''s'")
+        let attach = TmuxCommands.command(for: .attach("a b", controlMode: false))
+        XCTAssertTrue(attach?.hasSuffix("tmux attach-session -t '=a b'") == true, attach ?? "nil")
+        let control = TmuxCommands.command(for: .attach("main", controlMode: true))
+        XCTAssertTrue(control?.hasSuffix("tmux -CC attach-session -t '=main'") == true, control ?? "nil")
+        let new = TmuxCommands.command(for: .new("main", controlMode: false))
+        XCTAssertTrue(new?.hasSuffix("tmux new-session -A -s 'main'") == true, new ?? "nil")
+        XCTAssertTrue(TmuxCommands.command(for: .new(nil, controlMode: false))?.hasSuffix("tmux new-session") == true)
+        XCTAssertNil(TmuxCommands.command(for: .none))
+    }
+
+    /// Against the tmux on this machine, when there is one: the listing
+    /// command runs as a shell would run it.
+    func testTheListingRunsInAShell() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", TmuxCommands.listSessions]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        // 0 with sessions, 1 without a server, 127 without tmux: never a
+        // syntax error (2).
+        XCTAssertTrue([0, 1, 127].contains(process.terminationStatus), "\(process.terminationStatus)")
+    }
+}

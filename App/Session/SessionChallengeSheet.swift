@@ -14,6 +14,7 @@ struct SessionChallengeSheet: View {
     let onTrust: (Bool) -> Void
     var onKeyboardInteractive: ([String]) -> Void = { _ in }
     var onPassphrase: (String, Bool) -> Void = { _, _ in }
+    var onTmux: (TmuxChoice) -> Void = { _ in }
     /// SSH has no domain.
     var asksForDomain = true
     let onCancel: () -> Void
@@ -23,6 +24,8 @@ struct SessionChallengeSheet: View {
     @State private var password = ""
     @State private var savePassword = true
     @State private var answers: [String] = []
+    @State private var tmuxControlMode = false
+    @State private var newTmuxName = ""
 
     var body: some View {
         NavigationStack {
@@ -51,7 +54,74 @@ struct SessionChallengeSheet: View {
             keyboardInteractiveForm(prompts)
         case .keyPassphrase(let passphrase):
             passphraseForm(passphrase)
+        case .tmuxSession(let tmux):
+            tmuxChooser(tmux)
         }
+    }
+
+    // MARK: - tmux
+
+    /// docs/ssh-design.md 16.4: the host's tmux sessions, to go back into,
+    /// or a new one, or none - asked even when there is only one.
+    private func tmuxChooser(_ challenge: TmuxSessionChallenge) -> some View {
+        Form {
+            Section {
+                ForEach(challenge.sessions) { session in
+                    Button {
+                        onTmux(.attach(session.name, controlMode: tmuxControlMode))
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.name)
+                                .font(.body.monospaced())
+                                .foregroundStyle(.primary)
+                            Text(tmuxDetail(session))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityIdentifier("tmux-session-\(session.name)")
+                }
+            } header: {
+                Text("\(challenge.host) の tmux セッション")
+            } footer: {
+                Text("選んだセッションに戻ります。tmux の中で動いていたものはそのまま続いています。")
+            }
+            Section {
+                Toggle("Control Mode で開く", isOn: $tmuxControlMode)
+                    .accessibilityIdentifier("tmux-control-mode")
+            } footer: {
+                Text("tmux のウィンドウとペインを、このアプリのタブとペインとして表示します（tmux -CC）。")
+            }
+            Section("新しいセッション") {
+                TextField("名前（空なら tmux が付けます）", text: $newTmuxName)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("tmux-new-name")
+                Button("新しいセッションを作る") {
+                    let name = newTmuxName.trimmingCharacters(in: .whitespaces)
+                    onTmux(.new(name.isEmpty ? nil : name, controlMode: tmuxControlMode))
+                }
+                .accessibilityIdentifier("tmux-new")
+            }
+            Section {
+                Button("tmux を使わない") { onTmux(.none) }
+                    .accessibilityIdentifier("tmux-none")
+            }
+        }
+        .navigationTitle("tmux")
+        .keepsNavigationBarOnScroll()
+        .onAppear { tmuxControlMode = challenge.prefersControlMode }
+    }
+
+    private func tmuxDetail(_ session: TmuxSessionInfo) -> String {
+        var parts = [String(localized: "ウィンドウ \(session.windows)")]
+        if session.attachedClients > 0 {
+            parts.append(String(localized: "他で \(session.attachedClients) 台が接続中"))
+        }
+        if let activity = session.lastActivity {
+            parts.append(activity.formatted(.relative(presentation: .named)))
+        }
+        return parts.joined(separator: "・")
     }
 
     // MARK: - Credentials

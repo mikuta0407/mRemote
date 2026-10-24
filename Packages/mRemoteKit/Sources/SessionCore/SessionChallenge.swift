@@ -11,6 +11,8 @@ public enum SessionChallenge: Hashable, Sendable {
     /// SSH: the stored private key is encrypted and its passphrase is not
     /// stored, or was wrong.
     case keyPassphrase(KeyPassphraseChallenge)
+    /// SSH: the host has tmux sessions; go back into one, start one, or not.
+    case tmuxSession(TmuxSessionChallenge)
 
     public var id: ChallengeID {
         switch self {
@@ -19,8 +21,54 @@ public enum SessionChallenge: Hashable, Sendable {
         case .hostKey(let challenge): return challenge.id
         case .keyboardInteractive(let challenge): return challenge.id
         case .keyPassphrase(let challenge): return challenge.id
+        case .tmuxSession(let challenge): return challenge.id
         }
     }
+}
+
+/// One of the host's tmux sessions, as `tmux list-sessions` describes it.
+public struct TmuxSessionInfo: Hashable, Sendable, Identifiable {
+    public var id: String { name }
+    public let name: String
+    public let windows: Int
+    /// Clients attached to it now, elsewhere.
+    public let attachedClients: Int
+    public let lastActivity: Date?
+
+    public init(name: String, windows: Int, attachedClients: Int, lastActivity: Date?) {
+        self.name = name
+        self.windows = windows
+        self.attachedClients = attachedClients
+        self.lastActivity = lastActivity
+    }
+}
+
+public struct TmuxSessionChallenge: Hashable, Sendable {
+    public let id: ChallengeID
+    public let generation: SessionGeneration
+    public let host: String
+    /// Most recently used first.
+    public let sessions: [TmuxSessionInfo]
+    /// The profile asks for control mode: offered first.
+    public let prefersControlMode: Bool
+
+    public init(id: ChallengeID = ChallengeID(), generation: SessionGeneration, host: String,
+                sessions: [TmuxSessionInfo], prefersControlMode: Bool) {
+        self.id = id
+        self.generation = generation
+        self.host = host
+        self.sessions = sessions
+        self.prefersControlMode = prefersControlMode
+    }
+}
+
+/// The answer to a `TmuxSessionChallenge`.
+public enum TmuxChoice: Hashable, Sendable {
+    case attach(String, controlMode: Bool)
+    /// A new session; nil lets tmux name it.
+    case new(String?, controlMode: Bool)
+    /// A plain shell.
+    case none
 }
 
 /// docs/ssh-design.md section 7.1. The fingerprint is the OpenSSH form,
@@ -251,6 +299,7 @@ public enum ChallengeResponse: Hashable, Sendable {
     /// One answer per prompt, in order.
     case keyboardInteractive(answers: [String])
     case passphrase(String, save: Bool)
+    case tmux(TmuxChoice)
     case cancel
 }
 

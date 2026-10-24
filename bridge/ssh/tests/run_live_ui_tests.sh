@@ -38,7 +38,11 @@ KbdInteractiveAuthentication no
 UsePAM no
 StrictModes no
 LogLevel ERROR
+# The app looks for tmux on connecting; this keeps it to an empty directory
+# rather than the developer's own sessions. Nothing here starts or stops tmux.
+SetEnv TMUX_TMPDIR=$work/tmux
 CONFIG
+mkdir -p "$work/tmux"
 "$SSHD" -D -e -f "$work/sshd_config" 2>"$work/sshd.log" &
 sshd_pid=$!
 for _ in $(seq 50); do nc -z 127.0.0.1 "$port" 2>/dev/null && break; sleep 0.1; done

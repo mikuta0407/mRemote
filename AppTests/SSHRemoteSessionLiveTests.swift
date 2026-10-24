@@ -37,7 +37,8 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
         startupCommand: String? = nil,
         forwards: [SSHPortForward]? = nil,
         host: String = "127.0.0.1",
-        proxy: ProxyServer? = nil
+        proxy: ProxyServer? = nil,
+        tmux: SSHTmuxSettings? = nil
     ) -> SSHRemoteSession {
         var profile = ConnectionProfile(
             displayName: "live",
@@ -46,13 +47,22 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
             configuration: .ssh(SSHConfiguration(
                 authentication: SSHAuthentication(keyID: keyID, allowsKeyboardInteractive: false, allowsPassword: false),
                 startupCommand: startupCommand,
-                portForwards: forwards)))
+                portForwards: forwards,
+                tmux: tmux)))
         profile.proxyID = proxy?.id
         let configuration = EffectiveProfileResolver().resolve(
             profile: profile, globalSettings: .default, proxies: proxy.map { [$0] } ?? [])
         return SSHRemoteSession(
             configuration: configuration, credentials: InMemoryCredentialRepository(),
             knownHosts: knownHosts, keys: keys)
+    }
+
+    /// MR_SSH_LINUX=1: the server is a container, whose loopback is not
+    /// this machine's.
+    private func skipOnLinuxHost() throws {
+        if ProcessInfo.processInfo.environment["MREMOTE_SSH_TEST_TMUX_HOST"] == "isolated" {
+            throw XCTSkip("the server is not this machine")
+        }
     }
 
     private func storeKey(in keys: InMemorySSHKeyRepository) throws -> SSHKeyID {
@@ -178,6 +188,56 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
         XCTAssertFalse(endedTerminals.contains(session.primaryTerminal.id), "the last one ends the session instead")
     }
 
+    /// docs/ssh-design.md 16.4, against the Linux container's tmux: straight
+    /// into a named session,
+    /// then, on the next connection, that session offered and gone back into.
+    func testTmuxSessionsAreFoundAndGoneBackInto() async throws {
+        // It starts tmux sessions: only on a host of its own (the runner's
+        // Linux container), never on the machine running the tests, whose
+        // tmux it could reach.
+        guard ProcessInfo.processInfo.environment["MREMOTE_SSH_TEST_TMUX_HOST"] == "isolated" else {
+            throw XCTSkip("needs MR_SSH_LINUX=1 (a host of its own for tmux)")
+        }
+        let keys = InMemorySSHKeyRepository()
+        let keyID = try storeKey(in: keys)
+        let knownHosts = InMemoryKnownHostRepository()
+
+        let first = makeSession(keys: keys, knownHosts: knownHosts, keyID: keyID,
+                                tmux: SSHTmuxSettings(attach: .automatic, sessionName: "mr-live"))
+        try await first.connect()
+        try await wait(for: .connected, in: first)
+        XCTAssertTrue(first.terminalInput.send(Array("echo inside-${TMUX:+tmux}-$((1+1))\r".utf8)))
+        let inside = await output(of: first, containing: "inside-tmux-2")
+        XCTAssertTrue(inside.contains("inside-tmux-2"), "the automatic session runs in tmux: \(inside)")
+        await first.disconnect(reason: .userRequested)
+        try await wait(for: .disconnected, in: first)
+
+        let second = makeSession(keys: keys, knownHosts: knownHosts, keyID: keyID, tmux: SSHTmuxSettings(attach: .ask))
+        try await second.connect()
+        var offered: TmuxSessionChallenge?
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline, offered == nil {
+            if let challenge = await second.pendingChallenge {
+                switch challenge {
+                case .hostKey: try await second.respond(to: challenge.id, with: .trustPersistently)
+                case .tmuxSession(let tmux): offered = tmux
+                default: break
+                }
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let challenge = try XCTUnwrap(offered, "the host's tmux sessions are offered")
+        XCTAssertEqual(challenge.sessions.map(\.name), ["mr-live"])
+        try await second.respond(to: challenge.id, with: .tmux(.attach("mr-live", controlMode: false)))
+        try await wait(for: .connected, in: second)
+        XCTAssertTrue(second.terminalInput.send(Array("echo back-${TMUX:+tmux}-$((2+2))\r".utf8)))
+        let back = await output(of: second, containing: "back-tmux-4")
+        XCTAssertTrue(back.contains("back-tmux-4"), "back in the session: \(back)")
+        XCTAssertTrue(back.contains("inside-tmux-2"), "with what it showed before: \(back)")
+
+        await second.disconnect(reason: .userRequested)
+    }
+
     func testATrustedHostKeyIsNotAskedAgainAndAChangedOneIsFlagged() async throws {
         let keys = InMemorySSHKeyRepository()
         let knownHosts = InMemoryKnownHostRepository()
@@ -209,6 +269,8 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
     /// A forward to the sshd itself: what comes back through it is the SSH
     /// banner, so the bytes went device -> tunnel -> server -> target.
     func testALocalForwardReachesTheTargetThroughTheServer() async throws {
+        // Its target is this machine's loopback, as the server sees it.
+        try skipOnLinuxHost()
         let keys = InMemorySSHKeyRepository()
         let localPort = UInt16.random(in: 40000...50000)
         let session = makeSession(
@@ -245,6 +307,8 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
     /// The name goes to the proxy unresolved: "localhost" is looked up on the
     /// proxy's side.
     func testAProxyCarriesTheConnection() async throws {
+        // Its target is this machine's loopback, as the server sees it.
+        try skipOnLinuxHost()
         guard let socksPort else { throw XCTSkip("no SOCKS proxy (run_live_app_tests.sh starts one)") }
         let keys = InMemorySSHKeyRepository()
         let session = makeSession(
