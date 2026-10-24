@@ -61,7 +61,7 @@ TEST_RUNNER_MREMOTE_SSH_TEST_USER="$(id -un)" \
 TEST_RUNNER_MREMOTE_SSH_TEST_KEY="$work/user_ed25519" \
 xcodebuild test -project mRemote.xcodeproj -scheme mRemote \
     -destination "platform=iOS Simulator,name=$DEVICE" \
-    -derivedDataPath build/dd-sim-test \
+    -derivedDataPath build/dd-sim-test -skipMacroValidation \
     -skipPackagePluginValidation \
     -only-testing:mRemoteTests/SSHRemoteSessionLiveTests \
     2>&1 | grep -E "Test Case|error:|\*\* TEST|Executed" || true

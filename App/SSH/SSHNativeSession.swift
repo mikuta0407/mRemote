@@ -9,6 +9,9 @@ enum SSHNativeEvent: Sendable {
     case signIn(challengeID: UInt64, offered: UInt32, attempt: UInt32, rejected: UInt32)
     case keyboardInteractive(challengeID: UInt64, name: String, instruction: String, prompts: [KeyboardInteractivePrompt])
     case forward(index: Int, error: Int32)
+    /// A channel opened, ended (detail: its exit status, or -1) or was
+    /// refused (detail: the libssh2 error).
+    case channel(id: UInt32, state: mr_ssh_channel_state, detail: Int32)
     /// The run thread has returned and the handle is destroyed. Always last.
     case finished
 }
@@ -79,23 +82,51 @@ struct SSHNativeConnection: Sendable {
     var forwards: [SSHPortForward] = []
     /// A SOCKS5 proxy the connection goes through.
     var proxy: (host: String, port: UInt16)?
+    /// No shell once signed in: the caller opens one, after a command.
+    var deferShell = false
+}
+
+/// Where a channel's output goes: a terminal's buffer, or a command's
+/// collected output.
+private enum SSHOutputSink {
+    case terminal(TerminalOutputBuffer)
+    case command(SSHCommandOutput)
+}
+
+/// A command's output, kept up to a limit: it is read whole, not streamed.
+final class SSHCommandOutput: @unchecked Sendable {
+    static let limit = 256 * 1024
+    private let lock = NSLock()
+    private var bytes: [UInt8] = []
+
+    func append(_ buffer: UnsafeRawBufferPointer) {
+        lock.withLock {
+            let room = Self.limit - bytes.count
+            if room > 0 { bytes.append(contentsOf: buffer.prefix(room)) }
+        }
+    }
+
+    var text: String { lock.withLock { String(decoding: bytes, as: UTF8.self) } }
 }
 
 /// Owns the C session: creates it, runs it on a thread of its own, and turns
 /// its callbacks into one ordered event stream for the session actor. Output
-/// goes straight into the terminal buffer instead, on the data plane.
+/// goes straight into each channel's terminal buffer instead, on the data
+/// plane.
 final class SSHNativeSession: @unchecked Sendable {
     let events: AsyncStream<SSHNativeEvent>
     fileprivate let continuation: AsyncStream<SSHNativeEvent>.Continuation
-    fileprivate let output: TerminalOutputBuffer
     let gate = SSHNativeCallGate()
     private let label: String
     private let startLock = NSLock()
     private var didStart = false
+    /// Channel by channel, where output goes. Output for a channel not here
+    /// yet is refused, which pauses it until `route` resumes it.
+    private let routeLock = NSLock()
+    private var routes: [UInt32: SSHOutputSink] = [:]
 
-    init(label: String, output: TerminalOutputBuffer) {
+    init(label: String) {
         self.label = label
-        self.output = output
         var continuation: AsyncStream<SSHNativeEvent>.Continuation!
         // Unbounded: lifecycle events, bounded in number by the handshake.
         events = AsyncStream(bufferingPolicy: .unbounded) { continuation = $0 }
@@ -109,11 +140,6 @@ final class SSHNativeSession: @unchecked Sendable {
         startLock.unlock()
 
         let gate = gate
-        let output = output
-        // The buffer made room: read again. Held weakly through the gate,
-        // which is a no-op once the session is gone.
-        output.setSpaceAvailableHandler { _ = gate.call { mr_ssh_session_resume_output($0) } }
-
         let context = Unmanaged.passRetained(self)
         let thread = Thread { [continuation] in
             defer {
@@ -145,6 +171,7 @@ final class SSHNativeSession: @unchecked Sendable {
                         config.pixel_width = UInt16(connection.size.pixelWidth)
                         config.pixel_height = UInt16(connection.size.pixelHeight)
                         config.keepalive_seconds = UInt32(max(0, connection.keepAliveSeconds))
+                        config.defer_shell = connection.deferShell ? 1 : 0
                         if let proxy = connection.proxy, let proxyHost {
                             config.proxy_type = mr_ssh_proxy_type(MR_SSH_PROXY_SOCKS5)
                             config.proxy_host = UnsafePointer(proxyHost)
@@ -155,8 +182,10 @@ final class SSHNativeSession: @unchecked Sendable {
                             on_host_key: sshOnHostKey,
                             on_auth_request: sshOnAuthRequest,
                             on_keyboard_interactive: sshOnKeyboardInteractive,
-                            on_output: sshOnOutput,
-                            on_forward: sshOnForward
+                            on_output: nil,
+                            on_forward: sshOnForward,
+                            on_channel_output: sshOnChannelOutput,
+                            on_channel_state: sshOnChannelState
                         )
                         return forwards.withUnsafeMutableBufferPointer { buffer in
                             config.forwards = UnsafePointer(buffer.baseAddress)
@@ -252,18 +281,93 @@ final class SSHNativeSession: @unchecked Sendable {
         gate.call { mr_ssh_session_cancel_challenge($0, challengeID) }
     }
 
-    /// False when the queue is full or the session is gone.
-    func write(_ bytes: [UInt8]) -> Bool {
+    // MARK: Channels
+
+    /// Sends a terminal's output to `buffer`: the first shell (channel 0) or
+    /// one `openShell` made. Output it refused meanwhile is read again.
+    func route(_ channel: UInt32, to buffer: TerminalOutputBuffer) {
+        routeLock.withLock { routes[channel] = .terminal(buffer) }
+        // The buffer made room: read again. Held weakly through the gate,
+        // which is a no-op once the session is gone.
+        let gate = gate
+        buffer.setSpaceAvailableHandler { _ = gate.call { mr_ssh_channel_resume_output($0, channel) } }
+        gate.call { mr_ssh_channel_resume_output($0, channel) }
+    }
+
+    func unroute(_ channel: UInt32) {
+        _ = routeLock.withLock { routes.removeValue(forKey: channel) }
+    }
+
+    /// A new shell on the connection, its output to `buffer`. Nil when the
+    /// bridge has no room or the session is gone.
+    func openShell(size: TerminalSize, output buffer: TerminalOutputBuffer) -> UInt32? {
+        guard let id = open(kind: MR_SSH_CHANNEL_SHELL, command: nil, size: size, sink: .terminal(buffer)) else {
+            return nil
+        }
+        let gate = gate
+        buffer.setSpaceAvailableHandler { _ = gate.call { mr_ssh_channel_resume_output($0, id) } }
+        return id
+    }
+
+    /// A command without a terminal; what it prints collects in `output`.
+    func openCommand(_ command: String, output: SSHCommandOutput) -> UInt32? {
+        open(kind: MR_SSH_CHANNEL_EXEC, command: command, size: .standard, sink: .command(output))
+    }
+
+    /// The route is in place before the run thread can deliver anything: it
+    /// waits for `routeLock`, which the open holds.
+    private func open(kind: Int, command: String?, size: TerminalSize, sink: SSHOutputSink) -> UInt32? {
+        routeLock.lock()
+        defer { routeLock.unlock() }
+        var id: UInt32 = 0
         let status = gate.call { session in
-            bytes.withUnsafeBufferPointer { mr_ssh_session_write(session, $0.baseAddress, $0.count) }
+            func call(_ command: UnsafePointer<CChar>?) -> mr_ssh_status {
+                var config = mr_ssh_channel_config()
+                config.struct_size = UInt32(MemoryLayout<mr_ssh_channel_config>.size)
+                config.kind = mr_ssh_channel_kind(kind)
+                config.command = command
+                config.columns = UInt16(size.columns)
+                config.rows = UInt16(size.rows)
+                config.pixel_width = UInt16(size.pixelWidth)
+                config.pixel_height = UInt16(size.pixelHeight)
+                return mr_ssh_session_open_channel(session, &config, &id)
+            }
+            guard let command else { return call(nil) }
+            return command.withCString { call($0) }
+        }
+        guard status == mr_ssh_status(MR_SSH_STATUS_OK), id != 0 else { return nil }
+        routes[id] = sink
+        return id
+    }
+
+    /// False when the queue is full, or the channel or the session is gone.
+    func write(_ channel: UInt32, _ bytes: [UInt8]) -> Bool {
+        let status = gate.call { session in
+            bytes.withUnsafeBufferPointer { mr_ssh_channel_write(session, channel, $0.baseAddress, $0.count) }
         }
         return status == mr_ssh_status(MR_SSH_STATUS_OK)
     }
 
-    func resize(_ size: TerminalSize) {
+    func resize(_ channel: UInt32, _ size: TerminalSize) {
         gate.call {
-            mr_ssh_session_resize($0, UInt16(size.columns), UInt16(size.rows),
+            mr_ssh_channel_resize($0, channel, UInt16(size.columns), UInt16(size.rows),
                                   UInt16(size.pixelWidth), UInt16(size.pixelHeight))
+        }
+    }
+
+    func close(_ channel: UInt32) {
+        gate.call { mr_ssh_channel_close($0, channel) }
+    }
+
+    /// The run thread: a channel's output, to where it is routed.
+    fileprivate func deliver(_ channel: UInt32, _ bytes: UnsafeRawBufferPointer) -> Int {
+        let sink = routeLock.withLock { routes[channel] }
+        switch sink {
+        case .terminal(let buffer): return buffer.append(bytes)
+        case .command(let output):
+            output.append(bytes)
+            return bytes.count
+        case nil: return 0
         }
     }
 }
@@ -314,7 +418,17 @@ private func sshOnForward(_ context: UnsafeMutableRawPointer?, _ index: Int, _ e
     native(context).continuation.yield(.forward(index: index, error: error))
 }
 
-private func sshOnOutput(_ context: UnsafeMutableRawPointer?, _ bytes: UnsafePointer<UInt8>?, _ length: Int) -> Int {
+private func sshOnChannelOutput(_ context: UnsafeMutableRawPointer?, _ channel: UInt32, _ bytes: UnsafePointer<UInt8>?, _ length: Int) -> Int {
     guard let bytes, length > 0 else { return 0 }
-    return native(context).output.append(UnsafeRawBufferPointer(start: bytes, count: length))
+    return native(context).deliver(channel, UnsafeRawBufferPointer(start: bytes, count: length))
+}
+
+private func sshOnChannelState(_ context: UnsafeMutableRawPointer?, _ channel: UInt32, _ state: mr_ssh_channel_state, _ detail: Int32) {
+    let session = native(context)
+    if state != mr_ssh_channel_state(MR_SSH_CHANNEL_OPEN) {
+        // Ended: nothing more comes for it. A command's output stays with
+        // whoever waits for it.
+        session.unroute(channel)
+    }
+    session.continuation.yield(.channel(id: channel, state: state, detail: detail))
 }

@@ -120,6 +120,64 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
         try await wait(for: .disconnected, in: session)
     }
 
+    private func output(of channel: TerminalChannel, containing needle: String, timeout: TimeInterval = 15) async -> String {
+        var text = ""
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            text += String(decoding: channel.output.drain(), as: UTF8.self)
+            if text.contains(needle) { return text }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return text
+    }
+
+    /// Tabs and panes: more shells on the one connection, each with its own
+    /// output, size and end; and a command run beside them.
+    func testMoreShellsAndACommandShareTheConnection() async throws {
+        let keys = InMemorySSHKeyRepository()
+        let session = makeSession(keys: keys, knownHosts: InMemoryKnownHostRepository(), keyID: try storeKey(in: keys))
+        let events = await session.controlEvents()
+        var ended: [TerminalID] = []
+        let watcher = Task {
+            for await event in events {
+                if case .terminalEnded(let id, _) = event { ended.append(id) }
+            }
+            return ended
+        }
+        try await session.connect()
+        try await wait(for: .connected, in: session)
+
+        let opened = await session.openTerminal(size: TerminalSize(columns: 90, rows: 20))
+        let second = try XCTUnwrap(opened)
+        XCTAssertTrue(second.input.send(Array("stty size; echo second-$((2*3))\r".utf8)))
+        let secondText = await output(of: second, containing: "second-6")
+        XCTAssertTrue(secondText.contains("20 90"), secondText)
+        XCTAssertTrue(session.primaryTerminal.input.send(Array("echo first-$((1+6))\r".utf8)))
+        let firstText = await output(of: session.primaryTerminal, containing: "first-7")
+        XCTAssertTrue(firstText.contains("first-7"), firstText)
+        XCTAssertFalse(firstText.contains("second-6"), "the second shell's output reached the first")
+
+        let command = await session.runCommand("echo cmd-$((4*4)); exit 3")
+        XCTAssertEqual(command?.exitStatus, 3)
+        XCTAssertTrue(command?.output.contains("cmd-16") == true, command?.output ?? "nil")
+
+        // A shell exiting ends its terminal; the session goes on.
+        XCTAssertTrue(second.input.send(Array("exit\r".utf8)))
+        // Its input lets go once it has ended.
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, second.input.send(Array(" ".utf8)) {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertFalse(second.input.send(Array(" ".utf8)), "the ended shell still takes input")
+        let state = await session.state
+        XCTAssertEqual(state, .connected, "the session ended with a shell still open")
+        await session.closeTerminal(session.primaryTerminal.id)
+        try await wait(for: .disconnected, in: session)
+        let endedTerminals = await watcher.value
+        XCTAssertTrue(endedTerminals.contains(second.id), "terminalEnded for the second shell: \(endedTerminals)")
+        XCTAssertFalse(endedTerminals.contains(session.primaryTerminal.id), "the last one ends the session instead")
+    }
+
     func testATrustedHostKeyIsNotAskedAgainAndAChangedOneIsFlagged() async throws {
         let keys = InMemorySSHKeyRepository()
         let knownHosts = InMemoryKnownHostRepository()

@@ -7,25 +7,26 @@ import SessionCore
 let sshLog = Logger(subsystem: "com.mikuta0407.mRemote", category: "ssh")
 
 /// Keystrokes and pastes on their way to the bridge. Retargeted to each
-/// attempt's native session; refuses while not connected.
+/// attempt's shell; refuses while it has none.
 final class SSHTerminalInput: TerminalInputSink, @unchecked Sendable {
     private let lock = NSLock()
-    private var native: SSHNativeSession?
+    private var target: (native: SSHNativeSession, channel: UInt32)?
 
-    func attach(_ native: SSHNativeSession?) {
-        lock.withLock { self.native = native }
+    func attach(_ native: SSHNativeSession?, channel: UInt32 = 0) {
+        lock.withLock { target = native.map { ($0, channel) } }
     }
 
     @discardableResult
     func send(_ bytes: [UInt8]) -> Bool {
         guard !bytes.isEmpty else { return true }
-        guard let native = lock.withLock({ native }) else { return false }
-        return native.write(bytes)
+        guard let target = lock.withLock({ target }) else { return false }
+        return target.native.write(target.channel, bytes)
     }
 }
 
-/// One SSH connection with one shell, behind `TerminalSession`
-/// (docs/ssh-design.md section 6.2).
+/// One SSH connection with its shells - the first one, and those opened for
+/// tabs and panes - behind `TerminalSession` (docs/ssh-design.md sections 6.2
+/// and 16).
 ///
 /// Like `RDPRemoteSession`, the actor is the control plane only: output goes
 /// from the bridge's callback into `terminalOutput`, and keystrokes from the
@@ -34,9 +35,28 @@ final class SSHTerminalInput: TerminalInputSink, @unchecked Sendable {
 actor SSHRemoteSession: TerminalSession {
     nonisolated let id: SessionID
     nonisolated let profileID: ProfileID?
-    nonisolated let terminalOutput = TerminalOutputBuffer()
-    nonisolated var terminalInput: any TerminalInputSink { input }
+    nonisolated let primaryTerminal: TerminalChannel
     private nonisolated let input = SSHTerminalInput()
+
+    /// A terminal and this attempt's shell behind it.
+    private final class Terminal {
+        let channel: TerminalChannel
+        let input: SSHTerminalInput
+        var size: TerminalSize
+        /// The bridge's channel in this attempt; nil until it is open, and
+        /// once it ends.
+        var native: UInt32?
+        init(channel: TerminalChannel, input: SSHTerminalInput, size: TerminalSize) {
+            self.channel = channel
+            self.input = input
+            self.size = size
+        }
+    }
+    /// Every terminal still wanted, the primary first: what a reconnect
+    /// opens again.
+    private var terminals: [Terminal] = []
+    /// Commands waiting for their channel to end.
+    private var commands: [UInt32: (output: SSHCommandOutput, waiter: CheckedContinuation<TerminalCommandResult?, Never>)] = [:]
 
     private let configuration: EffectiveConnectionConfiguration
     private let settings: EffectiveSSHSettings
@@ -71,7 +91,6 @@ actor SSHRemoteSession: TerminalSession {
     private(set) var signedInWithPassword = false
     private var signInExhausted = false
     private var terminationCause: Termination?
-    private var size = TerminalSize.standard
 
     private enum Termination {
         case failed(RemoteSessionError)
@@ -88,6 +107,9 @@ actor SSHRemoteSession: TerminalSession {
     ) {
         self.id = id
         self.profileID = configuration.profileID
+        let primary = TerminalChannel(input: input)
+        self.primaryTerminal = primary
+        self.terminals = [Terminal(channel: primary, input: input, size: .standard)]
         self.configuration = configuration
         self.settings = configuration.ssh ?? EffectiveSSHSettings(authentication: SSHAuthentication(), startupCommand: nil)
         self.credentials = credentials
@@ -130,7 +152,7 @@ actor SSHRemoteSession: TerminalSession {
         cancelBridgeWait()
         pendingChallenge = nil
         if case .failed(let error) = reason { terminationCause = .failed(error) }
-        input.attach(nil)
+        for terminal in terminals { terminal.input.attach(nil) }
         if machine.transition(to: .disconnecting) != nil {
             emit(.stateChanged(machine.state, generation: machine.generation))
         }
@@ -218,10 +240,51 @@ actor SSHRemoteSession: TerminalSession {
 
     // MARK: - TerminalSession
 
-    func resizeTerminal(_ size: TerminalSize) async {
-        guard size != self.size else { return }
-        self.size = size
-        if machine.state == .connected { native?.resize(size) }
+    func resizeTerminal(_ id: TerminalID, to size: TerminalSize) async {
+        guard let terminal = terminals.first(where: { $0.channel.id == id }), size != terminal.size else { return }
+        terminal.size = size
+        if let channel = terminal.native, machine.state == .connected { native?.resize(channel, size) }
+    }
+
+    func openTerminal(size: TerminalSize) async -> TerminalChannel? {
+        guard machine.state == .connected, let native else { return nil }
+        let input = SSHTerminalInput()
+        let terminal = Terminal(channel: TerminalChannel(input: input), input: input, size: size)
+        guard openShell(for: terminal, on: native) else { return nil }
+        terminals.append(terminal)
+        return terminal.channel
+    }
+
+    func closeTerminal(_ id: TerminalID) async {
+        guard let index = terminals.firstIndex(where: { $0.channel.id == id }) else { return }
+        let terminal = terminals.remove(at: index)
+        terminal.input.attach(nil)
+        if let channel = terminal.native {
+            terminal.native = nil
+            native?.close(channel)
+        }
+        // The last one ends the session: the bridge reports it closed.
+    }
+
+    func runCommand(_ command: String) async -> TerminalCommandResult? {
+        guard machine.state == .connected || machine.state == .awaitingUser, let native else { return nil }
+        let output = SSHCommandOutput()
+        guard let channel = native.openCommand(command, output: output) else { return nil }
+        return await withCheckedContinuation { waiter in
+            commands[channel] = (output, waiter)
+        }
+    }
+
+    /// Opens a terminal's shell on this attempt's connection.
+    @discardableResult
+    private func openShell(for terminal: Terminal, on native: SSHNativeSession) -> Bool {
+        terminal.channel.output.reset()
+        guard let channel = native.openShell(size: terminal.size, output: terminal.channel.output) else {
+            return false
+        }
+        terminal.native = channel
+        terminal.input.attach(native, channel: channel)
+        return true
     }
 
     // MARK: - Attempts
@@ -248,9 +311,19 @@ actor SSHRemoteSession: TerminalSession {
         planner = makePlanner()
         signInExhausted = false
         terminationCause = nil
-        terminalOutput.reset()
+        // A reconnect opens every terminal again: the first one as the
+        // session's first shell, the rest once it is up.
+        if terminals.isEmpty { terminals = [Terminal(channel: primaryTerminal, input: input, size: .standard)] }
+        for terminal in terminals {
+            terminal.native = nil
+            terminal.input.attach(nil)
+            terminal.channel.output.reset()
+        }
+        let first = terminals[0]
 
-        let session = SSHNativeSession(label: "com.mikuta0407.mRemote.ssh.\(machine.generation.rawValue)", output: terminalOutput)
+        let session = SSHNativeSession(label: "com.mikuta0407.mRemote.ssh.\(machine.generation.rawValue)")
+        session.route(0, to: first.channel.output)
+        first.native = 0
         native = session
         let events = session.events
         pumpTask = Task { [weak self] in
@@ -264,7 +337,7 @@ actor SSHRemoteSession: TerminalSession {
             port: configuration.endpoint.port,
             username: username,
             terminalType: settings.terminalType,
-            size: size,
+            size: first.size,
             keepAliveSeconds: settings.keepAliveSeconds,
             forwards: Array(settings.portForwards.prefix(Int(MR_SSH_MAX_FORWARDS))),
             proxy: configuration.proxy.map { ($0.host, $0.port) }
@@ -345,6 +418,9 @@ actor SSHRemoteSession: TerminalSession {
                 generation: machine.generation, host: configuration.endpoint.host,
                 name: name, instruction: instruction, prompts: prompts)))
 
+        case let .channel(channel, state, detail):
+            applyChannel(channel, state: state, detail: detail)
+
         case let .forward(index, error):
             guard error != 0, index < settings.portForwards.count else { return }
             sshLog.error("port forward \(index, privacy: .public) could not listen: \(error, privacy: .public)")
@@ -393,14 +469,17 @@ actor SSHRemoteSession: TerminalSession {
             privateKey.withUnsafeMutableBytes { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) }
             privateKey = []
             saveSecretsAfterSignIn()
-            input.attach(native)
+            if let native, let first = terminals.first, first.native == 0 {
+                first.input.attach(native, channel: 0)
+                if let command = settings.startupCommand {
+                    _ = native.write(0, Array((command + "\r").utf8))
+                }
+                // Tabs and panes from before a reconnect.
+                for terminal in terminals.dropFirst() { openShell(for: terminal, on: native) }
+            }
             if machine.state == .awaitingUser { resumeAttempt() }
             if machine.transition(to: .connected) != nil {
                 emit(.stateChanged(machine.state, generation: machine.generation))
-            }
-            native?.resize(size)
-            if let command = settings.startupCommand {
-                _ = native?.write(Array((command + "\r").utf8))
             }
         case Int32(MR_SSH_STATE_CLOSED):
             let bridgeFailure = SSHBridgeFailure(rawValue: failure) ?? .internal
@@ -419,6 +498,27 @@ actor SSHRemoteSession: TerminalSession {
         default:
             break
         }
+    }
+
+    private func applyChannel(_ channel: UInt32, state: mr_ssh_channel_state, detail: Int32) {
+        guard state != mr_ssh_channel_state(MR_SSH_CHANNEL_OPEN) else { return }
+        if let command = commands.removeValue(forKey: channel) {
+            let ok = state == mr_ssh_channel_state(MR_SSH_CHANNEL_CLOSED)
+            command.waiter.resume(returning: ok
+                ? TerminalCommandResult(output: command.output.text, exitStatus: detail >= 0 ? detail : nil)
+                : nil)
+            return
+        }
+        guard let index = terminals.firstIndex(where: { $0.native == channel }) else { return }
+        let terminal = terminals.remove(at: index)
+        terminal.native = nil
+        terminal.input.attach(nil)
+        // The last shell ends the session, which says so itself.
+        guard terminals.contains(where: { $0.native != nil }) else {
+            terminals.insert(terminal, at: index)
+            return
+        }
+        emit(.terminalEnded(terminal.channel.id, exitStatus: detail >= 0 ? detail : nil))
     }
 
     private func saveSecretsAfterSignIn() {
@@ -441,7 +541,12 @@ actor SSHRemoteSession: TerminalSession {
     /// that publishes how the attempt ended.
     private func finishAttempt() {
         native = nil
-        input.attach(nil)
+        for terminal in terminals {
+            terminal.native = nil
+            terminal.input.attach(nil)
+        }
+        for command in commands.values { command.waiter.resume(returning: nil) }
+        commands.removeAll()
         pumpTask = nil
         pendingChallenge = nil
         bridgeWait = nil

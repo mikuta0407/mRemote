@@ -30,14 +30,62 @@ public protocol TerminalInputSink: AnyObject, Sendable {
     func send(_ bytes: [UInt8]) -> Bool
 }
 
-/// A session that runs a terminal (docs/ssh-design.md section 6.2). Like
-/// `DesktopSession`, its high-rate traffic bypasses the actor.
-public protocol TerminalSession: RemoteSession {
+public typealias TerminalID = UUID
+
+/// One terminal of a session: a shell, for a tab or a pane. The same object
+/// across reconnects: its output and input are retargeted to each attempt's
+/// shell, so the view that shows it keeps its screen.
+public final class TerminalChannel: Identifiable, Sendable {
+    public let id: TerminalID
     /// The shell's output, read by the terminal view.
-    nonisolated var terminalOutput: TerminalOutputBuffer { get }
-    nonisolated var terminalInput: any TerminalInputSink { get }
-    /// Tells the server the terminal's new size. Debounced by the caller.
-    func resizeTerminal(_ size: TerminalSize) async
+    public let output: TerminalOutputBuffer
+    public let input: any TerminalInputSink
+
+    public init(id: TerminalID = TerminalID(), output: TerminalOutputBuffer = TerminalOutputBuffer(), input: any TerminalInputSink) {
+        self.id = id
+        self.output = output
+        self.input = input
+    }
+}
+
+/// What a command run without a terminal printed, stdout and stderr merged.
+public struct TerminalCommandResult: Hashable, Sendable {
+    public let output: String
+    /// Nil when the server sent none.
+    public let exitStatus: Int32?
+
+    public init(output: String, exitStatus: Int32?) {
+        self.output = output
+        self.exitStatus = exitStatus
+    }
+}
+
+/// A session that runs terminals (docs/ssh-design.md sections 6.2 and 16).
+/// Like `DesktopSession`, its high-rate traffic bypasses the actor.
+public protocol TerminalSession: RemoteSession {
+    /// The first shell: there from the start, and opened again on reconnect.
+    nonisolated var primaryTerminal: TerminalChannel { get }
+    /// Another shell on the same connection, for a tab or a pane. Nil when
+    /// the session is not connected or has no room for more. Like the
+    /// primary one it comes back, as a new shell, after a reconnect.
+    func openTerminal(size: TerminalSize) async -> TerminalChannel?
+    /// Tells the server a terminal's new size. Debounced by the caller.
+    func resizeTerminal(_ id: TerminalID, to size: TerminalSize) async
+    /// Closes a terminal's shell, as a closed tab. Closing the last one ends
+    /// the session. `terminalEnded` follows.
+    func closeTerminal(_ id: TerminalID) async
+    /// Runs a command on the connection without a terminal, as `ssh host
+    /// command`. Nil when it could not run (not connected, refused).
+    func runCommand(_ command: String) async -> TerminalCommandResult?
+}
+
+extension TerminalSession {
+    public nonisolated var terminalOutput: TerminalOutputBuffer { primaryTerminal.output }
+    public nonisolated var terminalInput: any TerminalInputSink { primaryTerminal.input }
+
+    public func resizeTerminal(_ size: TerminalSize) async {
+        await resizeTerminal(primaryTerminal.id, to: size)
+    }
 }
 
 /// The shell's output on its way to the screen: a bounded byte queue between

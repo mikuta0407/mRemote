@@ -22,6 +22,9 @@ public enum SessionControlEvent: Sendable {
     /// SSH: a local port forward could not listen. `error` is the errno
     /// (EADDRINUSE: the port is taken). The session itself carries on.
     case portForwardFailed(localPort: UInt16, error: Int32)
+    /// SSH: one terminal's shell ended - it exited, or was closed - while the
+    /// session goes on in others. The last one ends the session instead.
+    case terminalEnded(TerminalID, exitStatus: Int32?)
 }
 
 public enum TransportSecurity: Hashable, Sendable {
