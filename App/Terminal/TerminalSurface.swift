@@ -357,6 +357,7 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
         updateComposition()
     }
 
+    @discardableResult
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
         updateComposition()
