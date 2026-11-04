@@ -27,6 +27,12 @@ mr_forwarder *mr_forwarder_create(
     void (*report)(void *context, size_t index, int32_t error),
     int (*congested)(void *context), void *context);
 
+/* A tunnel without a listener (ABI 5): fd, one end of a socket pair, is
+ * carried to remote_host:remote_port as an accepted connection would be, and
+ * taken over - closed with the tunnel. Returns -1, fd left to the caller, at
+ * MR_SSH_MAX_TUNNELS or out of memory. */
+int mr_forwarder_add_stream(mr_forwarder *forwarder, const char *remote_host, uint16_t remote_port, int fd);
+
 /* The descriptors to poll, appended at fds; returns how many (at most
  * mr_forwarder_max_fds). */
 size_t mr_forwarder_fill_pollfds(mr_forwarder *forwarder, struct pollfd *fds);

@@ -34,7 +34,11 @@ typedef struct {
     int fd;               /* -1 once closed */
     LIBSSH2_CHANNEL *channel;
     tunnel_state state;
-    size_t forward;
+    /* Where the channel goes: a listener's destination, or a stream's own
+     * (owned_host, freed with the tunnel). */
+    const char *remote_host;
+    uint16_t remote_port;
+    char *owned_host;
     uint16_t peer_port;
     /* client -> channel */
     uint8_t up[TUNNEL_BUFFER];
@@ -171,6 +175,26 @@ mr_forwarder *mr_forwarder_create(
     return forwarder;
 }
 
+int mr_forwarder_add_stream(mr_forwarder *f, const char *remote_host, uint16_t remote_port, int fd) {
+    if (!f || f->tunnel_count >= MR_SSH_MAX_TUNNELS) return -1;
+    tunnel *t = calloc(1, sizeof *t);
+    char *host = strdup(remote_host);
+    if (!t || !host || set_nonblocking(fd) != 0) {
+        free(t);
+        free(host);
+        return -1;
+    }
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+    t->fd = fd;
+    t->owned_host = host;
+    t->remote_host = host;
+    t->remote_port = remote_port;
+    t->state = TUNNEL_OPENING;
+    f->tunnels[f->tunnel_count++] = t;
+    return 0;
+}
+
 size_t mr_forwarder_max_fds(const mr_forwarder *forwarder) {
     return forwarder ? forwarder->listener_count + forwarder->tunnel_count : 0;
 }
@@ -219,6 +243,7 @@ static int retire_tunnel(mr_forwarder *f, size_t index) {
         return 0;
     }
     if (f->opening == t) f->opening = NULL;
+    free(t->owned_host);
     free(t);
     f->tunnels[index] = f->tunnels[--f->tunnel_count];
     return 1;
@@ -256,7 +281,8 @@ static int accept_connections(mr_forwarder *f) {
                 break;
             }
             t->fd = fd;
-            t->forward = i;
+            t->remote_host = l->remote_host;
+            t->remote_port = l->remote_port;
             t->state = TUNNEL_OPENING;
             t->peer_port = ntohs(peer.sin_port);
             f->tunnels[f->tunnel_count++] = t;
@@ -330,9 +356,8 @@ static int step_tunnel(mr_forwarder *f, tunnel *t) {
     if (t->state == TUNNEL_OPENING) {
         if (f->opening && f->opening != t) return 0;  /* not its turn */
         f->opening = t;
-        listener *l = &f->listeners[t->forward];
         t->channel = libssh2_channel_direct_tcpip_ex(
-            f->ssh, l->remote_host, l->remote_port, "127.0.0.1", t->peer_port);
+            f->ssh, t->remote_host, t->remote_port, "127.0.0.1", t->peer_port);
         if (!t->channel) {
             int error = libssh2_session_last_errno(f->ssh);
             if (error == LIBSSH2_ERROR_EAGAIN) return 0;
@@ -415,6 +440,7 @@ static int abandon_if_overdue(mr_forwarder *f, size_t index, int64_t now) {
     tunnel *t = f->tunnels[index];
     if (t->state != TUNNEL_CLOSING || now < t->close_deadline || f->abandoned >= MAX_ABANDONED) return 0;
     f->abandoned++;
+    free(t->owned_host);
     free(t);
     f->tunnels[index] = f->tunnels[--f->tunnel_count];
     return 1;
@@ -486,6 +512,7 @@ void mr_forwarder_destroy(mr_forwarder *f) {
      * would finish. libssh2_session_free frees them with the session. */
     for (size_t i = 0; i < f->tunnel_count; i++) {
         if (f->tunnels[i]->fd >= 0) close(f->tunnels[i]->fd);
+        free(f->tunnels[i]->owned_host);
         free(f->tunnels[i]);
     }
     for (size_t i = 0; i < f->listener_count; i++) {

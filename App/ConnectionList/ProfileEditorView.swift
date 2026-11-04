@@ -50,7 +50,12 @@ struct ProfileEditorView: View {
                     }
                 }
 
-                proxySection
+                if model.protocolKind == .ssh {
+                    jumpSection
+                }
+                if model.protocolKind != .ssh || model.jumpProfileID == nil {
+                    proxySection
+                }
 
                 Section {
                     TextField("グループ（任意）", text: $model.group)
@@ -234,6 +239,45 @@ struct ProfileEditorView: View {
                     .accessibilityIdentifier("profile-save-button")
                 }
             }
+        }
+    }
+
+    /// The SSH connections this one could go through: not itself, and none
+    /// that already goes through it, which would be a loop.
+    private var jumpCandidates: [ConnectionProfile] {
+        let profiles = environment.profiles
+        func reaches(_ start: ConnectionProfile, _ target: ProfileID) -> Bool {
+            var seen: Set<ProfileID> = []
+            var next = start.configuration.ssh?.jumpProfileID
+            while let id = next, seen.insert(id).inserted {
+                if id == target { return true }
+                next = profiles.first { $0.id == id }?.configuration.ssh?.jumpProfileID
+            }
+            return false
+        }
+        return profiles.filter { candidate in
+            guard candidate.protocolKind == .ssh else { return false }
+            guard let edited = model.editedProfileID else { return true }
+            return candidate.id != edited && !reaches(candidate, edited)
+        }
+    }
+
+    private var jumpSection: some View {
+        Section {
+            Picker("踏み台", selection: $model.jumpProfileID) {
+                Text("使わない").tag(ProfileID?.none)
+                ForEach(jumpCandidates) { profile in
+                    Text(profile.displayName).tag(ProfileID?.some(profile.id))
+                }
+            }
+            .accessibilityIdentifier("profile-jump-picker")
+            .onChange(of: environment.profiles) { _, profiles in
+                if let selected = model.jumpProfileID, !profiles.contains(where: { $0.id == selected }) {
+                    model.jumpProfileID = nil
+                }
+            }
+        } footer: {
+            Text("ほかの SSH 接続先を経由して接続します（ProxyJump）。踏み台へは、その接続先の設定（ユーザー名、鍵、プロキシ、その先の踏み台）で接続します。")
         }
     }
 

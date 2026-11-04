@@ -163,6 +163,12 @@ public actor ProfileRepository {
             return nil
         }
         let removed = document.profiles.remove(at: index)
+        // No profile is left reaching its host through one that is gone.
+        for index in document.profiles.indices {
+            guard case .ssh(var ssh) = document.profiles[index].configuration, ssh.jumpProfileID == id else { continue }
+            ssh.jumpProfileID = nil
+            document.profiles[index].configuration = .ssh(ssh)
+        }
         try await persist()
         guard let reference = removed.account.credentialReference else { return nil }
         let stillReferenced = document.profiles.contains {
@@ -189,7 +195,8 @@ public actor ProfileRepository {
     ) -> EffectiveConnectionConfiguration? {
         guard let profile = profile(id: id) else { return nil }
         return resolver.resolve(
-            profile: profile, globalSettings: document.globalSettings, proxies: document.proxies)
+            profile: profile, globalSettings: document.globalSettings, proxies: document.proxies,
+            profiles: document.profiles)
     }
 
     private func persist() async throws {

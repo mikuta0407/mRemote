@@ -270,4 +270,32 @@ private final class LockedCounter: @unchecked Sendable {
     private var count = 0
     func increment() { lock.lock(); count += 1; lock.unlock() }
     var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+
+    func testAJumpChainResolvesFromTheDeviceOutwardAndStopsAtALoop() throws {
+        let proxy = ProxyServer(name: "socks", host: "proxy", port: 1080)
+        func ssh(_ name: String, jump: ProfileID?) -> ConnectionProfile {
+            var profile = ConnectionProfile(
+                displayName: name, endpoint: RemoteEndpoint(host: "\(name).example", port: 22),
+                configuration: .ssh(SSHConfiguration(jumpProfileID: jump)))
+            profile.proxyID = proxy.id
+            return profile
+        }
+        var outer = ssh("outer", jump: nil)
+        let middle = ssh("middle", jump: outer.id)
+        let target = ssh("target", jump: middle.id)
+        // A loop back to the target ends the chain there.
+        outer.configuration = .ssh(SSHConfiguration(jumpProfileID: target.id))
+        let resolved = EffectiveProfileResolver().resolve(
+            profile: target, globalSettings: GlobalSettings(), proxies: [proxy], profiles: [outer, middle, target])
+        let chain = try XCTUnwrap(resolved.ssh?.jumpHosts)
+        XCTAssertEqual(chain.map(\.endpoint.host), ["outer.example", "middle.example"])
+        XCTAssertEqual(chain.map(\.proxy?.host), ["proxy", nil], "only the first hop goes through the proxy")
+        XCTAssertNil(resolved.proxy, "the target is reached through its jump hosts")
+        XCTAssertTrue(chain.allSatisfy { $0.ssh?.jumpHosts.isEmpty == true })
+
+        let last = try XCTUnwrap(resolved.lastJumpHost)
+        XCTAssertEqual(last.endpoint.host, "middle.example")
+        XCTAssertEqual(last.ssh?.jumpHosts.map(\.endpoint.host), ["outer.example"])
+        XCTAssertNil(try XCTUnwrap(last.lastJumpHost).lastJumpHost)
+    }
 }

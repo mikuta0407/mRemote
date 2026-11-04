@@ -336,6 +336,10 @@ public enum RemoteSessionError: Hashable, Sendable, Error {
     /// The proxy answered but would not carry the connection: it wants a
     /// sign-in, its rules refuse it, or it is not a SOCKS5 proxy.
     case proxyRefused
+    /// SSH: the jump host (ProxyJump) named failed with `error`; or, nil, it
+    /// was signed in to but the host behind it could not be reached through
+    /// it.
+    indirect case jumpHost(name: String, error: RemoteSessionError?)
 
     /// Whether an automatic retry could plausibly succeed without the user
     /// changing anything. Retrying an authentication failure risks locking the
@@ -344,6 +348,8 @@ public enum RemoteSessionError: Hashable, Sendable, Error {
         switch self {
         case .networkUnreachable, .connectionTimedOut, .protocolFailure, .proxyUnreachable:
             return true
+        case .jumpHost(_, let error):
+            return error?.isRetriable ?? false
         case .nameResolutionFailed, .connectionRefused, .tlsHandshakeFailed, .securityNegotiationFailed,
              .authenticationFailed, .accountRestricted, .certificateRejected, .hostKeyRejected,
              .userCancelled, .resourceUnavailable, .internalFailure, .proxyRefused:

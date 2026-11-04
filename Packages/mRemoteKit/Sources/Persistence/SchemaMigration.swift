@@ -25,8 +25,11 @@ public struct SchemaVersion: RawRepresentable, Hashable, Comparable, Sendable, C
     /// would drop the proxies it does not know when it next saves, so it
     /// refuses the store instead.
     public static let v4 = SchemaVersion(4)
+    /// Adds `SSHConfiguration.jumpProfileID` (ProxyJump). A v4 build would
+    /// drop the reference when it next saves, so it refuses the store.
+    public static let v5 = SchemaVersion(5)
     /// The version this build writes.
-    public static let current = v4
+    public static let current = v5
 }
 
 /// One step of the upgrade path. Steps are single-version so the chain can be
@@ -58,6 +61,7 @@ public struct SchemaMigrator: Sendable {
         AddSoftwareKeyboardModeMigration(),
         AddTerminalDefaultsMigration(),
         AddProxiesMigration(),
+        AddJumpHostsMigration(),
     ]
 
     public init(
@@ -185,5 +189,21 @@ public struct AddProxiesMigration: SchemaMigration {
             object["proxies"] = .array([])
         }
         return .object(object)
+    }
+}
+
+/// v4 -> v5: SSH profiles gain an optional `jumpProfileID`, absent meaning a
+/// direct connection, so nothing changes but the version.
+public struct AddJumpHostsMigration: SchemaMigration {
+    public let source = SchemaVersion.v4
+    public let destination = SchemaVersion.v5
+
+    public init() {}
+
+    public func migrate(_ document: JSONValue) throws -> JSONValue {
+        guard document.objectValue != nil else {
+            throw StoreError.malformedDocument(detail: "the document is not an object")
+        }
+        return document
     }
 }

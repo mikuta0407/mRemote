@@ -97,6 +97,24 @@ actor SSHRemoteSession: TerminalSession {
     private var detectsTmux = false
     private var terminationCause: Termination?
 
+    /// What the session is for: the user's terminals, or a jump host another
+    /// session connects through - signed in, with no shell, until stopped.
+    enum Role {
+        case terminals
+        case jumpHost
+    }
+    private let role: Role
+
+    /// ProxyJump: the session for the last jump host, itself reached through
+    /// any before it. This attempt connects over a stream through it once it
+    /// is signed in.
+    private var jump: SSHRemoteSession?
+    private var jumpEventsTask: Task<Void, Never>?
+    /// The challenge on screen is the jump host's, answered there.
+    private var jumpChallengeID: ChallengeID?
+    /// How the jump host failed, as it said.
+    private var jumpError: RemoteSessionError?
+
     private enum Termination {
         case failed(RemoteSessionError)
         case shellExited(Int32?)
@@ -108,9 +126,11 @@ actor SSHRemoteSession: TerminalSession {
         configuration: EffectiveConnectionConfiguration,
         credentials: any CredentialRepository,
         knownHosts: any KnownHostRepository,
-        keys: any SSHKeyRepository
+        keys: any SSHKeyRepository,
+        role: Role = .terminals
     ) {
         self.id = id
+        self.role = role
         self.profileID = configuration.profileID
         let primary = TerminalChannel(input: input)
         self.primaryTerminal = primary
@@ -125,6 +145,7 @@ actor SSHRemoteSession: TerminalSession {
     deinit {
         native?.requestStop()
         pumpTask?.cancel()
+        jumpEventsTask?.cancel()
     }
 
     // MARK: - RemoteSession
@@ -161,6 +182,7 @@ actor SSHRemoteSession: TerminalSession {
         if machine.transition(to: .disconnecting) != nil {
             emit(.stateChanged(machine.state, generation: machine.generation))
         }
+        await stopJump()
         guard let native else {
             finishTeardown()
             return
@@ -174,6 +196,21 @@ actor SSHRemoteSession: TerminalSession {
             throw StaleChallengeError(challengeID: challengeID)
         }
         pendingChallenge = nil
+
+        // The jump host's: answered there, where its connection waits.
+        if let jump, jumpChallengeID == challengeID {
+            jumpChallengeID = nil
+            if case .cancel = response {
+                terminationCause = .failed(.userCancelled)
+                emit(.error(.userCancelled))
+                await disconnect(reason: .userRequested)
+                return
+            }
+            resumeAttempt()
+            try await jump.respond(to: challengeID, with: response)
+            return
+        }
+
         let wait = bridgeWait
         bridgeWait = nil
 
@@ -303,6 +340,7 @@ actor SSHRemoteSession: TerminalSession {
             native?.requestStop()
             await withCheckedContinuation { workerFinished.append($0) }
         }
+        await stopJump()
         guard machine.state == .connecting else { return }
 
         let username = (typedUsername ?? configuration.account.username ?? "")
@@ -320,6 +358,7 @@ actor SSHRemoteSession: TerminalSession {
         planner = makePlanner()
         signInExhausted = false
         terminationCause = nil
+        jumpError = nil
         // A reconnect opens every terminal again: the first one as the
         // session's first shell, the rest once it is up.
         if terminals.isEmpty { terminals = [Terminal(channel: primaryTerminal, input: input, size: .standard)] }
@@ -328,13 +367,25 @@ actor SSHRemoteSession: TerminalSession {
             terminal.input.attach(nil)
             terminal.channel.output.reset()
         }
-        let first = terminals[0]
+        bridgeConnected = false
+        if let hop = configuration.lastJumpHost {
+            // The jump host first; this connection goes over a stream through
+            // it once it is signed in (jumpEvent).
+            await startJump(hop)
+            return
+        }
+        startNative(username: username, transport: nil)
+    }
 
+    /// This attempt's connection: to the host, or over `transport` through a
+    /// jump host.
+    private func startNative(username: String, transport: Int32?) {
+        let first = terminals[0]
         let session = SSHNativeSession(label: "com.mikuta0407.mRemote.ssh.\(machine.generation.rawValue)")
         // Looking for tmux first: no shell until it is known which to open.
-        detectsTmux = settings.tmux.attach != .off
-        bridgeConnected = false
-        if !detectsTmux {
+        // A jump host opens none at all.
+        detectsTmux = role == .terminals && settings.tmux.attach != .off
+        if role == .terminals && !detectsTmux {
             session.route(0, to: first.channel.output)
             first.native = 0
         }
@@ -353,10 +404,89 @@ actor SSHRemoteSession: TerminalSession {
             terminalType: settings.terminalType,
             size: first.size,
             keepAliveSeconds: settings.keepAliveSeconds,
-            forwards: Array(settings.portForwards.prefix(Int(MR_SSH_MAX_FORWARDS))),
+            forwards: role == .terminals ? Array(settings.portForwards.prefix(Int(MR_SSH_MAX_FORWARDS))) : [],
             proxy: configuration.proxy.map { ($0.host, $0.port) },
-            deferShell: detectsTmux
+            deferShell: detectsTmux || role == .jumpHost,
+            transport: transport
         ))
+    }
+
+    // MARK: - ProxyJump
+
+    private var jumpName: String {
+        configuration.lastJumpHost?.displayName ?? ""
+    }
+
+    private func startJump(_ hop: EffectiveConnectionConfiguration) async {
+        let session = SSHRemoteSession(
+            configuration: hop, credentials: credentials, knownHosts: knownHosts, keys: keys, role: .jumpHost)
+        jump = session
+        let events = await session.controlEvents()
+        jumpEventsTask = Task { [weak self] in
+            for await event in events {
+                await self?.jumpEvent(event, from: session)
+            }
+        }
+        sshLog.info("connecting through a jump host g=\(self.machine.generation.rawValue, privacy: .public)")
+        Task { try? await session.connect() }
+    }
+
+    /// Opens a stream through this session, signed in as a jump host, to
+    /// the host behind it.
+    func openStream(host: String, port: UInt16) -> Int32? {
+        guard role == .jumpHost, bridgeConnected else { return nil }
+        return native?.openStream(host: host, port: port)
+    }
+
+    private func jumpEvent(_ event: SessionControlEvent, from session: SSHRemoteSession) async {
+        guard session === jump else { return }
+        switch event {
+        case .userActionRequired(let challenge):
+            // Its host key, sign-in or prompts: on screen as this session's,
+            // answered there (respond).
+            jumpChallengeID = challenge.id
+            raise(challenge)
+        case .error(let error):
+            jumpError = error
+        case .stateChanged(.connected, _):
+            guard native == nil, machine.state == .connecting || machine.state == .awaitingUser else { return }
+            let username = (typedUsername ?? configuration.account.username ?? "").trimmingCharacters(in: .whitespaces)
+            guard let stream = await session.openStream(host: configuration.endpoint.host, port: configuration.endpoint.port),
+                  native == nil, session === jump else {
+                jumpFailed(.jumpHost(name: jumpName, error: nil))
+                return
+            }
+            startNative(username: username, transport: stream)
+        case .stateChanged(.failed, _), .stateChanged(.disconnected, _):
+            // Before this connection is up, the attempt ends with the jump
+            // host's reason; after, this connection drops by itself.
+            guard native == nil else { return }
+            jumpFailed(.jumpHost(name: jumpName, error: jumpError ?? .networkUnreachable))
+        default:
+            break
+        }
+    }
+
+    private func jumpFailed(_ error: RemoteSessionError) {
+        if jumpChallengeID != nil {
+            jumpChallengeID = nil
+            pendingChallenge = nil
+        }
+        if case .jumpHost(_, .userCancelled?) = error {
+            terminationCause = .failed(.userCancelled)
+        } else {
+            terminationCause = .failed(error)
+        }
+        finishAttempt()
+    }
+
+    private func stopJump() async {
+        jumpEventsTask?.cancel()
+        jumpEventsTask = nil
+        jumpChallengeID = nil
+        guard let jump else { return }
+        self.jump = nil
+        await jump.disconnect(reason: .userRequested)
     }
 
     private func makePlanner() -> SSHSignInPlanner {
@@ -485,6 +615,14 @@ actor SSHRemoteSession: TerminalSession {
             privateKey = []
             saveSecretsAfterSignIn()
             bridgeConnected = true
+            if role == .jumpHost {
+                // Signed in: ready to carry the next hop's stream.
+                if machine.state == .awaitingUser { resumeAttempt() }
+                if machine.transition(to: .connected) != nil {
+                    emit(.stateChanged(machine.state, generation: machine.generation))
+                }
+                return
+            }
             if detectsTmux {
                 Task { await chooseTmuxSession() }
                 return
@@ -514,6 +652,12 @@ actor SSHRemoteSession: TerminalSession {
             // A host key refused because the store could not be read keeps
             // that reason rather than reading as the user's rejection.
             if bridgeFailure == .hostKeyRejected, case .failed = terminationCause { break }
+            // Through a jump host, a stream that ends before the handshake
+            // did is the jump host not reaching this one.
+            if jump != nil, !bridgeConnected, bridgeFailure == .disconnected || bridgeFailure == .protocol {
+                terminationCause = .failed(.jumpHost(name: jumpName, error: nil))
+                break
+            }
             terminationCause = .failed(bridgeFailure.sessionError(detail: detail) ?? .internalFailure(detail: "ssh"))
         default:
             break
@@ -602,6 +746,13 @@ actor SSHRemoteSession: TerminalSession {
     private func finishAttempt() {
         native = nil
         bridgeConnected = false
+        // The jump host has nothing left to carry.
+        if let jump {
+            self.jump = nil
+            jumpEventsTask?.cancel()
+            jumpEventsTask = nil
+            Task { await jump.disconnect(reason: .userRequested) }
+        }
         for terminal in terminals {
             terminal.native = nil
             terminal.input.attach(nil)

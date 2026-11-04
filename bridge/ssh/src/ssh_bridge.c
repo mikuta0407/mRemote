@@ -154,9 +154,20 @@ struct mr_ssh_session {
     term_channel *channels[MR_SSH_MAX_CHANNELS];
     size_t channel_count;
     uint32_t next_channel_id;
+    /* ABI 5. Streams the run thread has yet to hand its forwarder: the
+     * session's end of each pair, and where it goes. */
+    struct {
+        int fd;
+        char *host;
+        uint16_t port;
+    } pending_streams[MR_SSH_MAX_PENDING_STREAMS];
+    size_t pending_stream_count;
+    /* The run thread has left its loop: no stream will be carried. */
+    int streams_closed;
 
-    /* Run thread only. */
+    /* Run thread only; but for a transport (ABI 5), set by create. */
     int socket_fd;
+    int has_transport;
     LIBSSH2_SESSION *ssh;
     /* A shell has been asked for: the session ends with its last shell. */
     int had_shell;
@@ -686,6 +697,56 @@ mr_ssh_status mr_ssh_session_open_channel(
     return MR_SSH_STATUS_OK;
 }
 
+mr_ssh_status mr_ssh_session_open_stream(mr_ssh_session *s, const char *host, uint16_t port, int32_t *out_fd) {
+    if (out_fd) *out_fd = -1;
+    if (!s || !host || !out_fd || port == 0 || strnlen(host, MR_SSH_MAX_HOST_BYTES + 1) == 0 ||
+        strnlen(host, MR_SSH_MAX_HOST_BYTES + 1) > MR_SSH_MAX_HOST_BYTES) {
+        return MR_SSH_ERROR_INVALID_ARGUMENT;
+    }
+    char *copy = strdup(host);
+    if (!copy) return MR_SSH_ERROR_OUT_OF_MEMORY;
+    int pair[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) {
+        free(copy);
+        return MR_SSH_ERROR_OUT_OF_MEMORY;
+    }
+    int one = 1;
+    setsockopt(pair[0], SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+    setsockopt(pair[1], SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+    pthread_mutex_lock(&s->lock);
+    mr_ssh_status status = MR_SSH_STATUS_OK;
+    if (s->stop_requested || s->streams_closed) {
+        status = MR_SSH_ERROR_STOPPED;
+    } else if (s->pending_stream_count >= MR_SSH_MAX_PENDING_STREAMS) {
+        status = MR_SSH_ERROR_QUEUE_FULL;
+    } else {
+        size_t i = s->pending_stream_count++;
+        s->pending_streams[i].fd = pair[1];
+        s->pending_streams[i].host = copy;
+        s->pending_streams[i].port = port;
+    }
+    pthread_mutex_unlock(&s->lock);
+    if (status != MR_SSH_STATUS_OK) {
+        close(pair[0]);
+        close(pair[1]);
+        free(copy);
+        return status;
+    }
+    *out_fd = pair[0];
+    wake(s);
+    return MR_SSH_STATUS_OK;
+}
+
+/* Under the lock, or with the run thread gone: the streams no one will
+ * carry, closed so their callers read EOF. */
+static void close_pending_streams(mr_ssh_session *s) {
+    for (size_t i = 0; i < s->pending_stream_count; i++) {
+        close(s->pending_streams[i].fd);
+        free(s->pending_streams[i].host);
+    }
+    s->pending_stream_count = 0;
+}
+
 mr_ssh_status mr_ssh_session_request_stop(mr_ssh_session *s) {
     if (!s) return MR_SSH_ERROR_INVALID_ARGUMENT;
     pthread_mutex_lock(&s->lock);
@@ -741,6 +802,9 @@ mr_ssh_status mr_ssh_session_create(
         }
     }
     if (config->proxy_username || config->proxy_password) return MR_SSH_ERROR_INVALID_ARGUMENT;
+    if (config->use_transport && (config->transport_fd < 0 || config->proxy_type != MR_SSH_PROXY_NONE)) {
+        return MR_SSH_ERROR_INVALID_ARGUMENT;
+    }
     if (config->proxy_type == MR_SSH_PROXY_NONE) {
         if (config->proxy_host || config->proxy_port) return MR_SSH_ERROR_INVALID_ARGUMENT;
     } else if (config->proxy_type == MR_SSH_PROXY_SOCKS5) {
@@ -829,6 +893,13 @@ mr_ssh_status mr_ssh_session_create(
     }
     pthread_mutex_init(&s->lock, NULL);
     pthread_cond_init(&s->cond, NULL);
+    if (config->use_transport) {
+        int one = 1;
+        setsockopt(config->transport_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+        set_nonblocking(config->transport_fd);
+        s->socket_fd = config->transport_fd;
+        s->has_transport = 1;
+    }
     *out_session = s;
     return MR_SSH_STATUS_OK;
 }
@@ -852,6 +923,9 @@ mr_ssh_status mr_ssh_session_destroy(mr_ssh_session *s) {
 
     close(s->wake_pipe[0]);
     close(s->wake_pipe[1]);
+    /* A transport the session never ran on. */
+    if (s->socket_fd >= 0) close(s->socket_fd);
+    close_pending_streams(s);
     pthread_mutex_destroy(&s->lock);
     pthread_cond_destroy(&s->cond);
     free_copies(s);
@@ -1364,6 +1438,7 @@ static int socks5_connect(mr_ssh_session *s, const char *host, uint16_t port, in
  * the connects and the proxy's handshake share connect_timeout_ms. Returns
  * 0, or -1 with failure and detail set. */
 static int connect_socket(mr_ssh_session *s, mr_ssh_failure *failure, int32_t *detail) {
+    if (s->has_transport) return 0;  /* already connected, through a jump host */
     int64_t deadline = now_ms() + s->connect_timeout_ms;
     if (!s->proxy_host) return connect_host(s, s->host, s->port, deadline, failure, detail);
 
@@ -1873,6 +1948,21 @@ static void report_forward(void *context, size_t index, int32_t error) {
     if (s->callbacks.on_forward) s->callbacks.on_forward(s->context, index, error);
 }
 
+/* Hands the streams opened meanwhile to the forwarder. One it cannot take
+ * (no forwarder, its tunnels all in use) is closed: its caller reads EOF. */
+static void adopt_pending_streams(mr_ssh_session *s, mr_forwarder *forwarder) {
+    pthread_mutex_lock(&s->lock);
+    for (size_t i = 0; i < s->pending_stream_count; i++) {
+        if (mr_forwarder_add_stream(forwarder, s->pending_streams[i].host, s->pending_streams[i].port,
+                                    s->pending_streams[i].fd) != 0) {
+            close(s->pending_streams[i].fd);
+        }
+        free(s->pending_streams[i].host);
+    }
+    s->pending_stream_count = 0;
+    pthread_mutex_unlock(&s->lock);
+}
+
 /* The connected loop. Returns when the last shell ends, the connection
  * drops, or a stop is requested; reports the final state itself. */
 static void run_shell(mr_ssh_session *s) {
@@ -1882,14 +1972,12 @@ static void run_shell(mr_ssh_session *s) {
         return;
     }
     if (s->keepalive_seconds) libssh2_keepalive_config(s->ssh, 1, s->keepalive_seconds);
-    mr_forwarder *forwarder = NULL;
-    if (s->forward_count) {
-        forwarder = mr_forwarder_create(s->ssh, s->forwards, s->forward_count, report_forward,
-                                        congested_callback, s);
-        /* Out of memory: the shell goes on without them. */
-        if (!forwarder) {
-            for (size_t i = 0; i < s->forward_count; i++) report_forward(s, i, ENOMEM);
-        }
+    /* Always, for the streams (ABI 5), if not for forwards. */
+    mr_forwarder *forwarder = mr_forwarder_create(s->ssh, s->forwards, s->forward_count, report_forward,
+                                                  congested_callback, s);
+    /* Out of memory: the shell goes on without them. */
+    if (!forwarder) {
+        for (size_t i = 0; i < s->forward_count; i++) report_forward(s, i, ENOMEM);
     }
 
     int32_t last_exit = -1;
@@ -1900,6 +1988,7 @@ static void run_shell(mr_ssh_session *s) {
         }
         s->received = 0;
         open_pending_channels(s);
+        adopt_pending_streams(s, forwarder);
         if (stop_requested(s)) continue;
 
         /* Every open channel, in a snapshot: only this thread removes them,
@@ -1960,6 +2049,7 @@ static void run_shell(mr_ssh_session *s) {
         }
         int more = 0;
         pthread_mutex_lock(&s->lock);
+        if (s->pending_stream_count) more = 1;
         for (size_t i = 0; i < s->channel_count && !more; i++) {
             term_channel *c = s->channels[i];
             if (c->phase == PHASE_PENDING || c->close_requested) more = 1;
@@ -2149,6 +2239,12 @@ failed:
         report_state(s, MR_SSH_STATE_FAILED, failure, detail);
     }
 done:
+    /* Streams still waiting: none will be carried now. The forwarder closed
+     * those it had. */
+    pthread_mutex_lock(&s->lock);
+    s->streams_closed = 1;
+    close_pending_streams(s);
+    pthread_mutex_unlock(&s->lock);
     close_connection(s);
     pthread_mutex_lock(&s->lock);
     s->running = 0;

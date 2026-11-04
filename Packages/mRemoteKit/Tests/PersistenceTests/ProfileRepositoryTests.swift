@@ -150,4 +150,20 @@ func AsyncAssertEqual<T: Equatable>(
 ) async {
     let actual = await value()
     XCTAssertEqual(actual, expected, file: file, line: line)
+
+    func testDeletingAJumpHostLeavesItsUsersDirect() async throws {
+        let repository = try await ProfileRepository(store: InMemoryProfileStore())
+        let bastion = ConnectionProfile(displayName: "bastion", endpoint: RemoteEndpoint(host: "b", port: 22),
+                                        configuration: .ssh(SSHConfiguration()))
+        let inner = ConnectionProfile(displayName: "inner", endpoint: RemoteEndpoint(host: "10.0.0.2", port: 22),
+                                      configuration: .ssh(SSHConfiguration(jumpProfileID: bastion.id)))
+        try await repository.upsert(bastion)
+        try await repository.upsert(inner)
+        let through = await repository.effectiveConfiguration(for: inner.id)
+        XCTAssertEqual(through?.ssh?.jumpHosts.map(\.endpoint.host), ["b"])
+
+        try await repository.delete(id: bastion.id)
+        let after = await repository.profile(id: inner.id)
+        XCTAssertNil(after?.configuration.ssh?.jumpProfileID)
+    }
 }

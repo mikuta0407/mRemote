@@ -81,6 +81,24 @@ public struct EffectiveConnectionConfiguration: Hashable, Sendable {
         self.proxy = proxy
     }
 
+    /// An SSH connection's last jump host, reached through the ones before
+    /// it: the hop a session for this connection connects through.
+    public var lastJumpHost: EffectiveConnectionConfiguration? {
+        guard let ssh, let last = ssh.jumpHosts.last, let lastSSH = last.ssh else { return nil }
+        return last.replacingSSH(lastSSH.through(Array(ssh.jumpHosts.dropLast())))
+    }
+
+    public func replacingSSH(_ ssh: EffectiveSSHSettings) -> EffectiveConnectionConfiguration {
+        EffectiveConnectionConfiguration(
+            profileID: profileID, displayName: displayName, endpoint: endpoint, account: account,
+            resolutionPolicy: resolutionPolicy, initialScale: initialScale, displayQuality: displayQuality,
+            keyboardLayout: keyboardLayout, audioPlayback: audioPlayback, clipboardPolicy: clipboardPolicy,
+            scrollDirection: scrollDirection, reconnectPolicy: reconnectPolicy, securityPolicy: securityPolicy,
+            gateway: gateway, sharedFolder: sharedFolder, remoteApp: remoteApp,
+            redirectsMicrophone: redirectsMicrophone, prefersH264: prefersH264, remotePlatform: remotePlatform,
+            streamQuality: streamQuality, ssh: ssh, proxy: proxy)
+    }
+
     /// Eisu/Kana to Muhenkan/Henkan is only promised for the Japanese layout,
     /// so the UI can warn where a profile has opted out of it.
     public var guaranteesJapaneseImeKeys: Bool { keyboardLayout == .japanese }
@@ -89,13 +107,20 @@ public struct EffectiveConnectionConfiguration: Hashable, Sendable {
 public struct EffectiveProfileResolver: Sendable {
     public init() {}
 
+    /// How many jump hosts a chain may have. A longer one is almost
+    /// certainly a mistake; it is cut there rather than looped on.
+    public static let maximumJumpHosts = 8
+
     /// `proxies` are the saved ones the profile's `proxyID` names. A
     /// reference to a proxy that is gone (deleteProxy clears them, so only a
-    /// hand-edited store has one) connects directly.
+    /// hand-edited store has one) connects directly. `profiles` are where an
+    /// SSH profile's jump host is looked up; one that is gone, not SSH, or
+    /// already in the chain ends the chain there.
     public func resolve(
         profile: ConnectionProfile,
         globalSettings: GlobalSettings,
-        proxies: [ProxyServer] = []
+        proxies: [ProxyServer] = [],
+        profiles: [ConnectionProfile] = []
     ) -> EffectiveConnectionConfiguration {
         let proxy = profile.proxyID.flatMap { id in proxies.first { $0.id == id } }
         let rdp: RDPConfiguration
@@ -103,7 +128,26 @@ public struct EffectiveProfileResolver: Sendable {
         case .rdp(let configuration):
             rdp = configuration
         case .ssh(let ssh):
-            return resolve(profile: profile, ssh: ssh, globalSettings: globalSettings, proxy: proxy)
+            var chain: [EffectiveConnectionConfiguration] = []
+            var seen: Set<ProfileID> = [profile.id]
+            var next = ssh.jumpProfileID
+            var first: (profile: ConnectionProfile, ssh: SSHConfiguration)?
+            while let id = next, !seen.contains(id), chain.count < Self.maximumJumpHosts,
+                  let jump = profiles.first(where: { $0.id == id }), case .ssh(let jumpSSH) = jump.configuration {
+                seen.insert(id)
+                chain.insert(resolve(profile: jump, ssh: jumpSSH, globalSettings: globalSettings, proxy: nil), at: 0)
+                first = (jump, jumpSSH)
+                next = jumpSSH.jumpProfileID
+            }
+            // Only the hop this device connects to goes through a proxy, its
+            // own: the rest are reached through it.
+            if let first {
+                chain[0] = resolve(
+                    profile: first.profile, ssh: first.ssh, globalSettings: globalSettings,
+                    proxy: first.profile.proxyID.flatMap { id in proxies.first { $0.id == id } })
+            }
+            return resolve(profile: profile, ssh: ssh, globalSettings: globalSettings,
+                           proxy: chain.isEmpty ? proxy : nil, jumpHosts: chain)
         }
         return EffectiveConnectionConfiguration(
             profileID: profile.id,
@@ -136,7 +180,8 @@ extension EffectiveProfileResolver {
         profile: ConnectionProfile,
         ssh: SSHConfiguration,
         globalSettings: GlobalSettings,
-        proxy: ProxyServer?
+        proxy: ProxyServer?,
+        jumpHosts: [EffectiveConnectionConfiguration] = []
     ) -> EffectiveConnectionConfiguration {
         let terminal = globalSettings.terminal
         let settings = EffectiveSSHSettings(
@@ -153,7 +198,8 @@ extension EffectiveProfileResolver {
             keepAliveSeconds: max(0, ssh.keepAliveSeconds.resolved(default: terminal.keepAliveSeconds)),
             exitBehavior: ssh.exitBehavior.resolved(default: terminal.exitBehavior),
             portForwards: ssh.portForwards ?? [],
-            tmux: ssh.tmux ?? SSHTmuxSettings()
+            tmux: ssh.tmux ?? SSHTmuxSettings(),
+            jumpHosts: jumpHosts
         )
         // The RDP fields take the global defaults: nothing reads them for an
         // SSH connection, and a real value is safer than a sentinel.

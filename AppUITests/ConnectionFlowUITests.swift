@@ -202,7 +202,9 @@ final class ConnectionFlowUITests: XCTestCase {
     }
 
     private func shot(_ name: String) {
-        let screenshot = XCUIScreen.main.screenshot()
+        // The window's: on an iPhone Duo held open, the main screen is the
+        // dark cover display.
+        let screenshot = app.windows.firstMatch.screenshot()
         let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
         attachment.lifetime = .keepAlways
@@ -276,6 +278,47 @@ final class ConnectionFlowUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["1 件の接続先で使用中"].waitForExistence(timeout: 5),
                       "the list says it is in use\n\(app.debugDescription)")
         shot("proxy-4-settings")
+    }
+
+    /// An ssh config read in: its hosts listed to choose from, saved as SSH
+    /// connections with the jump host linked; then the menu offers it back.
+    func testAnSSHConfigIsReadInWithItsJumpHost() {
+        app.terminate()
+        app.launchEnvironment["MREMOTE_UITEST_SSH_CONFIG"] = """
+        Host bastion
+            HostName bastion.example.com
+            User jumper
+        Host inner
+            HostName 10.0.0.2
+            Port 2022
+            ProxyJump bastion
+            ForwardAgent yes
+        """
+        app.launch()
+        _ = assertAppears("ssh-config-item-inner", "the hosts in the file are listed")
+        XCTAssertTrue(app.staticTexts["踏み台: bastion"].exists, "the jump host is shown\n\(app.debugDescription)")
+        XCTAssertTrue(app.staticTexts["ForwardAgent"].exists, "what is not read is said\n\(app.debugDescription)")
+        shot("ssh-config-1-plan")
+        element("ssh-config-import-confirm").tap()
+
+        let row = assertAppears("profile-row-inner", "the hosts are saved as connections")
+        _ = assertAppears("profile-row-bastion", "the jump host is saved too")
+        row.swipeLeft()
+        let edit = app.buttons["編集"].firstMatch
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        edit.tap()
+        let picker = assertAppears("profile-jump-picker", "the editor shows the jump host")
+        XCTAssertTrue(
+            (picker.value as? String)?.contains("bastion") == true || app.staticTexts["bastion"].exists,
+            "inner goes through bastion\n\(app.debugDescription)")
+        XCTAssertFalse(element("profile-proxy-picker").exists, "a proxy is the jump host's, not this one's")
+        shot("ssh-config-2-editor")
+        element("profile-cancel-button").tap()
+
+        element("list-more-menu").tap()
+        XCTAssertTrue(element("ssh-config-export-button").waitForExistence(timeout: 5))
+        XCTAssertTrue(element("ssh-config-export-button").isEnabled)
+        shot("ssh-config-3-menu")
     }
 
     /// Groups head their connections, favourites come first, and the

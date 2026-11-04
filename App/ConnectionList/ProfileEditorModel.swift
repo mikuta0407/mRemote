@@ -45,6 +45,8 @@ final class ProfileEditorModel: Identifiable {
     var tmuxAttach = SSHTmuxSettings.Attach.ask
     var tmuxSessionName = ""
     var tmuxControlMode = false
+    /// ProxyJump: the SSH connection this one is reached through.
+    var jumpProfileID: ProfileID?
 
     var displayName: String
     var host: String
@@ -95,6 +97,8 @@ final class ProfileEditorModel: Identifiable {
     var driveName = "mRemote"
 
     private let existing: ConnectionProfile?
+    /// The connection being edited; nil for a new one.
+    var editedProfileID: ProfileID? { existing?.id }
     /// What a new profile is built on: an import's settings beyond the form.
     private let base: RDPConfiguration?
     /// Shown above the form for an import.
@@ -186,6 +190,7 @@ final class ProfileEditorModel: Identifiable {
                 tmuxAttach = tmux.attach
                 tmuxSessionName = tmux.sessionName ?? ""
                 tmuxControlMode = tmux.controlMode
+                jumpProfileID = ssh.jumpProfileID
             }
             if let folder = rdp.sharedFolder {
                 switch folder.location {
@@ -309,6 +314,7 @@ final class ProfileEditorModel: Identifiable {
                                    controlMode: tmuxControlMode)
         // The default is kept as nil, as a profile from before had it.
         ssh.tmux = tmux == SSHTmuxSettings() ? nil : tmux
+        ssh.jumpProfileID = jumpProfileID
         return ssh
     }
 

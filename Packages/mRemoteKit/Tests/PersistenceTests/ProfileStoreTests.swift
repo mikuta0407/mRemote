@@ -93,7 +93,7 @@ final class ProfileDocumentCodecTests: XCTestCase {
         let v3 = try JSONSerialization.data(withJSONObject: object)
 
         let decoded = try ProfileDocumentCodec().decode(v3)
-        XCTAssertEqual(decoded.schemaVersion, .v4)
+        XCTAssertEqual(decoded.schemaVersion, .current)
         XCTAssertEqual(decoded.proxies, [])
         XCTAssertEqual(decoded.profiles, sample.profiles)
         XCTAssertTrue(decoded.profiles.allSatisfy { $0.proxyID == nil })

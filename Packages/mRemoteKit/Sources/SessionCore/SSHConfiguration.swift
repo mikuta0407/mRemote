@@ -133,6 +133,10 @@ public struct SSHConfiguration: Hashable, Sendable, Codable {
     /// What to do about tmux on the host (docs/ssh-design.md section 16.4).
     /// Nil is the default: ask when it has sessions.
     public var tmux: SSHTmuxSettings?
+    /// Schema v5. The SSH profile to reach this host through (ProxyJump):
+    /// its own host, user, key and jump host, if it has one in turn. Nil for
+    /// a direct connection.
+    public var jumpProfileID: ProfileID?
 
     public static let defaultPort: UInt16 = 22
     public static let defaultTerminalType = "xterm-256color"
@@ -160,7 +164,8 @@ public struct SSHConfiguration: Hashable, Sendable, Codable {
         clipboardPolicy: Inheritable<ClipboardPolicy> = .inherit,
         reconnectPolicy: Inheritable<ReconnectPolicy> = .explicit(.disabled),
         portForwards: [SSHPortForward]? = nil,
-        tmux: SSHTmuxSettings? = nil
+        tmux: SSHTmuxSettings? = nil,
+        jumpProfileID: ProfileID? = nil
     ) {
         self.authentication = authentication
         self.startupCommand = startupCommand
@@ -175,6 +180,7 @@ public struct SSHConfiguration: Hashable, Sendable, Codable {
         self.reconnectPolicy = reconnectPolicy
         self.portForwards = portForwards
         self.tmux = tmux
+        self.jumpProfileID = jumpProfileID
     }
 }
 
@@ -225,6 +231,10 @@ public struct EffectiveSSHSettings: Hashable, Sendable {
     public let exitBehavior: ShellExitBehavior
     public let portForwards: [SSHPortForward]
     public let tmux: SSHTmuxSettings
+    /// The jump hosts, the one this device connects to first; each reaches
+    /// the next, the last this host. Empty for a direct connection. Their own
+    /// `jumpHosts` are empty: the chain is all here.
+    public let jumpHosts: [EffectiveConnectionConfiguration]
 
     public init(
         authentication: SSHAuthentication,
@@ -238,9 +248,11 @@ public struct EffectiveSSHSettings: Hashable, Sendable {
         keepAliveSeconds: Int = TerminalDefaults.default.keepAliveSeconds,
         exitBehavior: ShellExitBehavior = TerminalDefaults.default.exitBehavior,
         portForwards: [SSHPortForward] = [],
-        tmux: SSHTmuxSettings = SSHTmuxSettings(attach: .off)
+        tmux: SSHTmuxSettings = SSHTmuxSettings(attach: .off),
+        jumpHosts: [EffectiveConnectionConfiguration] = []
     ) {
         self.tmux = tmux
+        self.jumpHosts = jumpHosts
         self.authentication = authentication
         self.startupCommand = startupCommand
         self.terminalType = terminalType
@@ -252,5 +264,16 @@ public struct EffectiveSSHSettings: Hashable, Sendable {
         self.keepAliveSeconds = keepAliveSeconds
         self.exitBehavior = exitBehavior
         self.portForwards = portForwards
+    }
+}
+
+extension EffectiveSSHSettings {
+    /// The same, reached through `jumpHosts` instead.
+    public func through(_ jumpHosts: [EffectiveConnectionConfiguration]) -> EffectiveSSHSettings {
+        EffectiveSSHSettings(
+            authentication: authentication, startupCommand: startupCommand, terminalType: terminalType,
+            fontSize: fontSize, theme: theme, optionAsMeta: optionAsMeta, cursorStyle: cursorStyle,
+            scrollbackLines: scrollbackLines, keepAliveSeconds: keepAliveSeconds, exitBehavior: exitBehavior,
+            portForwards: portForwards, tmux: tmux, jumpHosts: jumpHosts)
     }
 }

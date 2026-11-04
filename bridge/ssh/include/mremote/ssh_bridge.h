@@ -32,8 +32,9 @@ extern "C" {
 #endif
 
 /* ABI 2: local port forwards. ABI 3: a SOCKS5 proxy. ABI 4: more channels on
- * the connection. */
-#define MR_SSH_BRIDGE_ABI_VERSION 4u
+ * the connection. ABI 5: streams through the connection, and a connection
+ * over one (ProxyJump). */
+#define MR_SSH_BRIDGE_ABI_VERSION 5u
 #define MR_SSH_DEFAULT_PORT 22u
 #define MR_SSH_MAX_HOST_BYTES 1024u
 #define MR_SSH_MAX_USERNAME_BYTES 1024u
@@ -61,6 +62,8 @@ extern "C" {
 /* ABI 4. Shells and commands open at once, the first shell included. */
 #define MR_SSH_MAX_CHANNELS 16u
 #define MR_SSH_MAX_COMMAND_BYTES (16u * 1024u)
+/* ABI 5. Streams waiting for the session to carry them. */
+#define MR_SSH_MAX_PENDING_STREAMS 8u
 
 typedef struct mr_ssh_session mr_ssh_session;
 typedef int32_t mr_ssh_status;
@@ -216,6 +219,14 @@ typedef struct {
      * for mr_ssh_session_open_channel - say after an exec has looked at what
      * the host runs - and ends when its last shell does. */
     int32_t defer_shell;
+    /* ABI 5. Nonzero: the connection is transport_fd, already open - a
+     * stream from mr_ssh_session_open_stream on the jump host's session -
+     * and host is not looked up or connected to (it still names the server,
+     * for the caller's host key check). No proxy then. The session takes the
+     * descriptor over once create succeeds, run or not; on a failed create
+     * it stays the caller's. */
+    int32_t use_transport;
+    int32_t transport_fd;
 } mr_ssh_config;
 
 typedef uint32_t mr_ssh_host_key_type;
@@ -357,6 +368,16 @@ mr_ssh_status mr_ssh_channel_resume_output(mr_ssh_session *session, uint32_t cha
 /* Closes a channel, as a closed tab: its program gets a hang-up. Its CLOSED
  * follows. Closing the last shell ends the session. */
 mr_ssh_status mr_ssh_channel_close(mr_ssh_session *session, uint32_t channel_id);
+/* ABI 5. `ssh -W host:port` through this session: *out_fd is one end of a
+ * socket pair, the caller's to read, write and close; the session carries
+ * the other end over a direct-tcpip channel to host:port, once connected.
+ * The far end refusing, the channel or the session ending, close the
+ * session's end: the caller reads EOF. Hand *out_fd to another session's
+ * transport_fd to reach a host only this one can (ProxyJump).
+ * MR_SSH_ERROR_QUEUE_FULL: MR_SSH_MAX_PENDING_STREAMS wait already;
+ * MR_SSH_ERROR_STOPPED: the session is ending or over. */
+mr_ssh_status mr_ssh_session_open_stream(
+    mr_ssh_session *session, const char *host, uint16_t port, int32_t *out_fd);
 /* Idempotent. Wakes a pending challenge, a name lookup and the I/O wait. */
 mr_ssh_status mr_ssh_session_request_stop(mr_ssh_session *session);
 

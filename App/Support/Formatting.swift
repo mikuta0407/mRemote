@@ -118,6 +118,10 @@ enum Formatting {
     static func errorLabel(_ error: RemoteSessionError, protocolKind: ProtocolKind) -> String {
         guard protocolKind == .ssh else { return errorLabel(error) }
         switch error {
+        case .jumpHost(let name, let underlying?):
+            return String(localized: "踏み台「\(name)」に接続できませんでした。") + errorLabel(underlying, protocolKind: .ssh)
+        case .jumpHost(let name, nil):
+            return String(localized: "踏み台「\(name)」から接続先に届きませんでした。接続先のホスト名とポート、踏み台の SSH サーバーで転送（AllowTcpForwarding）が許可されているかを確認してください。")
         case .connectionRefused:
             return String(localized: "接続を拒否されました。ポート番号と、リモート側で SSH サーバー（Mac なら「リモートログイン」）が有効になっているかを確認してください。")
         case .connectionTimedOut:
@@ -163,6 +167,8 @@ enum Formatting {
             return String(localized: "アプリ内部のエラーです。もう一度接続してください。続く場合は、この詳細を添えて報告してください。（\(detail)）")
         case .proxyUnreachable:
             return String(localized: "プロキシ経由で接続できませんでした。プロキシのホスト名とポート、プロキシが動いているか、プロキシから接続先に届くかを確認してください。")
+        case .jumpHost(let name, let underlying):
+            return errorLabel(.jumpHost(name: name, error: underlying), protocolKind: .ssh)
         case .proxyRefused:
             return String(localized: "プロキシが接続を中継しませんでした。SOCKS5 プロキシであること、ユーザー名とパスワードを求めない設定であること、プロキシの規則でこの接続先が許可されていることを確認してください。")
         }

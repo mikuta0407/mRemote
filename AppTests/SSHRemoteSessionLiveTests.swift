@@ -339,6 +339,63 @@ final class SSHRemoteSessionLiveTests: XCTestCase {
         await session.disconnect(reason: .userRequested)
     }
 
+    /// ProxyJump: the target through a jump host, both this sshd, each with
+    /// its own host key question; then a target the jump host cannot reach.
+    func testAJumpHostCarriesTheConnection() async throws {
+        let keys = InMemorySSHKeyRepository()
+        let knownHosts = InMemoryKnownHostRepository()
+        let keyID = try storeKey(in: keys)
+        // The target as the jump host sees it: on the Linux host, its own sshd.
+        let isolated = ProcessInfo.processInfo.environment["MREMOTE_SSH_TEST_TMUX_HOST"] == "isolated"
+        func profiles(targetPort: UInt16) -> (ConnectionProfile, [ConnectionProfile]) {
+            let auth = SSHAuthentication(keyID: keyID, allowsKeyboardInteractive: false, allowsPassword: false)
+            let bastion = ConnectionProfile(
+                displayName: "bastion", endpoint: RemoteEndpoint(host: "127.0.0.1", port: port),
+                account: RemoteAccount(username: user),
+                configuration: .ssh(SSHConfiguration(authentication: auth, tmux: SSHTmuxSettings(attach: .off))))
+            let target = ConnectionProfile(
+                displayName: "target", endpoint: RemoteEndpoint(host: "localhost", port: targetPort),
+                account: RemoteAccount(username: user),
+                configuration: .ssh(SSHConfiguration(
+                    authentication: auth, startupCommand: "echo jumped-$((40+3))",
+                    tmux: SSHTmuxSettings(attach: .off), jumpProfileID: bastion.id)))
+            return (target, [bastion, target])
+        }
+        func session(targetPort: UInt16) -> SSHRemoteSession {
+            let (target, all) = profiles(targetPort: targetPort)
+            let configuration = EffectiveProfileResolver().resolve(
+                profile: target, globalSettings: .default, profiles: all)
+            return SSHRemoteSession(configuration: configuration, credentials: InMemoryCredentialRepository(),
+                                    knownHosts: knownHosts, keys: keys)
+        }
+
+        let through = session(targetPort: isolated ? 22 : port)
+        var asked: [String] = []
+        try await through.connect()
+        try await wait(for: .connected, in: through, seen: { asked.append("\($0.host):\($0.port)") })
+        XCTAssertEqual(asked, ["127.0.0.1:\(port)", "localhost:\(isolated ? 22 : port)"],
+                       "the jump host's key is asked about first, then the target's")
+        let text = await output(of: through, containing: "jumped-43")
+        XCTAssertTrue(text.contains("jumped-43"), text)
+        XCTAssertTrue(through.terminalInput.send(Array("exit\r".utf8)))
+        try await wait(for: .disconnected, in: through)
+
+        // Nothing listens there: the jump host signs in (its key now known),
+        // the stream to the target does not get through.
+        let unreachable = session(targetPort: 1)
+        let events = await unreachable.controlEvents()
+        try await unreachable.connect()
+        var error: RemoteSessionError?
+        for await event in events {
+            if case .error(let reported) = event {
+                error = reported
+                break
+            }
+        }
+        XCTAssertEqual(error, .jumpHost(name: "bastion", error: nil))
+        await unreachable.disconnect(reason: .userRequested)
+    }
+
     func testWithoutAnAcceptedKeySignInFails() async throws {
         let session = makeSession(keys: InMemorySSHKeyRepository(), knownHosts: InMemoryKnownHostRepository(), keyID: nil)
         try await session.connect()

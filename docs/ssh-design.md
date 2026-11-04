@@ -477,3 +477,26 @@ RDP と方針が逆になる点が多いので明記する。
 - ペインごとに端末ビューを持ち、`%output` を流し込む。新しく見るペインは `capture-pane -e -J`（2000 行）とカーソル位置で埋め、その間の出力は後ろで待たせる。入力は `send-keys -H`（16 進）で送る。
 - 分割・新しい窓・閉じる・切り離し（detach）は tmux のコマンドとして送る。切り離した後でもう一度 attach すれば、窓・ペイン・履歴がそのまま戻る。
 - 試験: Linux コンテナでのみ動かす UI 試験（attach、入力、分割、新しい窓、detach、再 attach で履歴が戻る）。
+
+## 17. ProxyJump と ssh config（2026-10-27）
+
+### 17.1 bridge（ABI 5）
+
+- `mr_ssh_session_open_stream(session, host, port, &fd)`: `ssh -W` に当たる。socketpair の片側を返し、もう片側をセッションの forwarder が direct-tcpip チャネルで `host:port` に運ぶ（転送の tunnel と同じ仕組みで、listener を持たない）。接続前に頼めば、サインイン後に運ぶ。宛先が拒否・セッションが終わると、返した側に EOF が届く。
+- `mr_ssh_config.use_transport` / `transport_fd`: 名前解決と TCP 接続をせず、渡された fd の上で SSH を始める。create が成功した時点で fd はセッションのもの（run しなくても destroy で閉じる）。プロキシとは併用しない。
+- 踏み台のセッションは `defer_shell` で、シェルを開かずに待つ。
+
+### 17.2 プロファイルとセッション
+
+- `SSHConfiguration.jumpProfileID`（schema v5）: 経由する SSH 接続先。踏み台へは、その接続先自身の設定（ユーザー、鍵、ホスト鍵、keepalive、さらに先の踏み台）で接続する。消された接続先を指す参照は、削除時に外す。
+- `EffectiveSSHSettings.jumpHosts`: 端末から近い順の踏み台の列（最大 8、循環はそこで打ち切り）。プロキシは最初の踏み台のものだけを使う。
+- `SSHRemoteSession` は最後の踏み台を `role: .jumpHost` の `SSHRemoteSession` として先に接続し（その手前の踏み台は、そのセッションがさらに内側に持つ）、サインインできたら `openStream` の fd で自分の接続を始める。踏み台のホスト鍵・パスワードなどの問い合わせは、そのまま外側のセッションの問い合わせとして表示し、答えは踏み台に回す。
+- 失敗は `RemoteSessionError.jumpHost(name:error:)`。`error` が nil なら「踏み台には入れたが、そこから接続先に届かなかった」（宛先なし、AllowTcpForwarding no など）。
+
+### 17.3 ssh config の読み込みと書き出し
+
+- 接続先一覧の「…」メニューから。読むのは HostName、Port、User、IdentityFile、ProxyJump、TCPKeepAlive、ServerAliveInterval。ssh と同じく、合う `Host` ブロックを上から見て最初の値を使う（`Host *` は既定値、最初の `Host` より前の行は全体に効く）。`Match` と `Include` は読まず、読まなかったキーワードと一緒に一覧で示す。
+- ProxyJump の踏み台は、同じファイルの Host 名ならその接続先につなぐ。そうでない `user@host:port` や、連鎖（`a,b`）で別の踏み台を経由する必要があるものは、別の接続先として作る。
+- IdentityFile は端末から読めないので、ファイル名（`~/.ssh/id_ed25519` なら `id_ed25519`）と同じ名前の保存済みの鍵に結び付ける。なければその旨を示す。
+- ServerAliveInterval は接続先の keepalive の秒数。ServerAliveInterval がなく TCPKeepAlive no なら keepalive をしない。書き出しはその逆。
+- 取り込む前に一覧で選ばせる。同じ名前（または書き出し時の別名）の SSH 接続先は、ファイルにある項目だけを書き換える。

@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import SessionCore
+import SSHProtocol
 
 struct ConnectionListView: View {
     @Environment(AppEnvironment.self) private var environment
@@ -9,17 +10,21 @@ struct ConnectionListView: View {
     /// route is modelled once and presented once.
     @State private var route: Route?
     @State private var isImportingFile = false
+    @State private var isImportingSSHConfig = false
+    @State private var sshConfigExport: SSHConfigDocument?
     @State private var searchText = ""
     @Environment(\.openWindow) private var openWindow
 
     private enum Route: Identifiable {
         case editor(ProfileEditorModel)
         case settings
+        case sshConfigImport(SSHConfigProfiles.Plan)
 
         var id: String {
             switch self {
             case .editor(let model): return "editor-\(model.id)"
             case .settings: return "settings"
+            case .sshConfigImport: return "ssh-config-import"
             }
         }
     }
@@ -59,6 +64,26 @@ struct ConnectionListView: View {
                     .accessibilityIdentifier("import-profile-button")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            isImportingSSHConfig = true
+                        } label: {
+                            Label("ssh config から読み込む", systemImage: "terminal")
+                        }
+                        .accessibilityIdentifier("ssh-config-import-button")
+                        Button {
+                            sshConfigExport = SSHConfigDocument(text: environment.sshConfigExport)
+                        } label: {
+                            Label("ssh config に書き出す", systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(!environment.profiles.contains { $0.protocolKind == .ssh })
+                        .accessibilityIdentifier("ssh-config-export-button")
+                    } label: {
+                        Label("その他", systemImage: "ellipsis.circle")
+                    }
+                    .accessibilityIdentifier("list-more-menu")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         route = .editor(ProfileEditorModel(mode: .create))
                     } label: {
@@ -77,6 +102,24 @@ struct ConnectionListView: View {
         ) { result in
             guard case .success(let url) = result else { return }
             Task { await environment.open(url) }
+        }
+        // A second importer on another view: two on one view do not both
+        // work, as with sheets.
+        .background {
+            Color.clear
+                .fileImporter(isPresented: $isImportingSSHConfig, allowedContentTypes: [.item]) { result in
+                    guard case .success(let url) = result,
+                          let plan = environment.sshConfigPlan(from: url) else { return }
+                    route = .sshConfigImport(plan)
+                }
+                .fileExporter(
+                    isPresented: Binding(get: { sshConfigExport != nil }, set: { if !$0 { sshConfigExport = nil } }),
+                    document: sshConfigExport,
+                    contentType: .plainText,
+                    defaultFilename: "config"
+                ) { _ in
+                    sshConfigExport = nil
+                }
         }
         .onChange(of: environment.pendingImport?.id, initial: true) { _, _ in
             guard let model = environment.pendingImport else { return }
@@ -112,8 +155,21 @@ struct ConnectionListView: View {
             case .settings:
                 SettingsView()
                     .macSheetSize()
+            case .sshConfigImport(let plan):
+                SSHConfigImportView(plan: plan)
+                    .macSheetSize()
             }
         }
+        #if DEBUG
+        // UI tests hand the importer's text in directly: the Files picker
+        // is not theirs to drive.
+        .task {
+            guard UITestConfiguration.isActive,
+                  let text = ProcessInfo.processInfo.environment["MREMOTE_UITEST_SSH_CONFIG"] else { return }
+            for _ in 0..<100 where environment.profiles.isEmpty { try? await Task.sleep(for: .milliseconds(30)) }
+            if let plan = environment.sshConfigPlan(text: text, name: "config") { route = .sshConfigImport(plan) }
+        }
+        #endif
         // The Mac's menu bar: 設定… (⌘,) and 新しい接続先… (⌘N).
         .onChange(of: environment.listRequest, initial: true) { _, request in
             guard let request else { return }

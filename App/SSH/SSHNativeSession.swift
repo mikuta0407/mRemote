@@ -84,6 +84,9 @@ struct SSHNativeConnection: Sendable {
     var proxy: (host: String, port: UInt16)?
     /// No shell once signed in: the caller opens one, after a command.
     var deferShell = false
+    /// A stream through a jump host to connect over, instead of `host`
+    /// (`openStream` on the jump host's session). Taken over by the session.
+    var transport: Int32?
 }
 
 /// Where a channel's output goes: a terminal's buffer, or a command's
@@ -172,7 +175,10 @@ final class SSHNativeSession: @unchecked Sendable {
                         config.pixel_height = UInt16(connection.size.pixelHeight)
                         config.keepalive_seconds = UInt32(max(0, connection.keepAliveSeconds))
                         config.defer_shell = connection.deferShell ? 1 : 0
-                        if let proxy = connection.proxy, let proxyHost {
+                        if let transport = connection.transport {
+                            config.use_transport = 1
+                            config.transport_fd = transport
+                        } else if let proxy = connection.proxy, let proxyHost {
                             config.proxy_type = mr_ssh_proxy_type(MR_SSH_PROXY_SOCKS5)
                             config.proxy_host = UnsafePointer(proxyHost)
                             config.proxy_port = proxy.port
@@ -196,6 +202,8 @@ final class SSHNativeSession: @unchecked Sendable {
                 }
             }
             guard status == MR_SSH_STATUS_OK, let session else {
+                // A failed create leaves the transport with us.
+                if let transport = connection.transport { Darwin.close(transport) }
                 continuation.yield(.state(mr_ssh_state(MR_SSH_STATE_FAILED), failure: 12, detail: status))
                 return
             }
@@ -338,6 +346,16 @@ final class SSHNativeSession: @unchecked Sendable {
         guard status == mr_ssh_status(MR_SSH_STATUS_OK), id != 0 else { return nil }
         routes[id] = sink
         return id
+    }
+
+    /// `ssh -W host:port`: a stream through this connection, for another
+    /// session to connect over. Nil when the session is ending or gone.
+    func openStream(host: String, port: UInt16) -> Int32? {
+        var fd: Int32 = -1
+        let status = gate.call { session in
+            host.withCString { mr_ssh_session_open_stream(session, $0, port, &fd) }
+        }
+        return status == mr_ssh_status(MR_SSH_STATUS_OK) && fd >= 0 ? fd : nil
     }
 
     /// False when the queue is full, or the channel or the session is gone.

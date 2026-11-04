@@ -1327,7 +1327,14 @@ static void on_channel_state(void *context, uint32_t id, mr_ssh_channel_state st
     pthread_mutex_unlock(&c->base.lock);
 }
 
+static void channel_harness_start_over(channel_harness *c, int defer_shell, int transport_fd);
+
 static void channel_harness_start(channel_harness *c, int defer_shell) {
+    channel_harness_start_over(c, defer_shell, -1);
+}
+
+/* transport_fd >= 0: the connection is that stream, not a TCP connect. */
+static void channel_harness_start_over(channel_harness *c, int defer_shell, int transport_fd) {
     memset(c, 0, sizeof *c);
     harness *h = &c->base;
     pthread_mutex_init(&h->lock, NULL);
@@ -1336,6 +1343,10 @@ static void channel_harness_start(channel_harness *c, int defer_shell) {
     h->key_name = "user_ed25519";
     mr_ssh_config config = test_config("127.0.0.1", g_port, 5000);
     config.defer_shell = defer_shell;
+    if (transport_fd >= 0) {
+        config.use_transport = 1;
+        config.transport_fd = transport_fd;
+    }
     mr_ssh_callbacks callbacks = {
         .on_state = on_state,
         .on_host_key = on_host_key,
@@ -1490,6 +1501,86 @@ static void test_a_refused_command_and_the_channel_limit(void) {
     harness_finish(&c.base, thread);
 }
 
+/* Reads the stream until EOF or the deadline; returns whether EOF came. */
+static int stream_reaches_eof(int fd, int seconds) {
+    double until = monotonic_seconds() + seconds;
+    char buffer[256];
+    while (monotonic_seconds() < until) {
+        struct pollfd p = { .fd = fd, .events = POLLIN, .revents = 0 };
+        if (poll(&p, 1, 200) <= 0) continue;
+        ssize_t n = read(fd, buffer, sizeof buffer);
+        if (n == 0) return 1;
+        if (n < 0 && errno != EAGAIN && errno != EINTR) return 1;
+    }
+    return 0;
+}
+
+static void test_a_session_runs_over_a_stream_through_a_jump_host(void) {
+    printf("ProxyJump: a session over a stream through another\n");
+    channel_harness jump;
+    channel_harness_start(&jump, 1);
+    pthread_t jump_thread;
+    pthread_create(&jump_thread, NULL, run_thread, &jump.base);
+
+    /* Asked for before the jump host is signed in to: carried once it is. */
+    int32_t fd = -1;
+    mr_ssh_status status = mr_ssh_session_open_stream(jump.base.session, "127.0.0.1", g_port, &fd);
+    CHECK(status == MR_SSH_STATUS_OK && fd >= 0, "open_stream=%d fd=%d", status, fd);
+
+    channel_harness target;
+    channel_harness_start_over(&target, 0, fd);
+    pthread_t target_thread;
+    pthread_create(&target_thread, NULL, run_thread, &target.base);
+    channel_write(&target, 0, "echo hop-$((6*7))\n");
+    CHECK(wait_channel(&target, 0, "hop-42", 15), "shell through the jump host: %s", target.out[0]);
+    CHECK(!jump.opened[0], "the jump host opened a shell");
+
+    /* Nothing listens there: the stream ends, and the session lives on. */
+    int32_t refused = -1;
+    CHECK(mr_ssh_session_open_stream(jump.base.session, "127.0.0.1", 1, &refused) == MR_SSH_STATUS_OK,
+          "open_stream to a closed port");
+    CHECK(refused < 0 || stream_reaches_eof(refused, 15), "a refused stream did not end");
+    if (refused >= 0) close(refused);
+    CHECK(!jump.base.ended, "a refused stream ended the jump host's session");
+    CHECK(mr_ssh_session_open_stream(jump.base.session, "", 22, &refused) == MR_SSH_ERROR_INVALID_ARGUMENT,
+          "empty host");
+
+    /* The jump host going ends the session that ran through it. */
+    mr_ssh_session_request_stop(jump.base.session);
+    CHECK(wait_for(&jump.base, NULL, 15), "the jump host did not stop");
+    CHECK(wait_for(&target.base, NULL, 15), "the target outlived its jump host");
+    CHECK(target.base.last_state == MR_SSH_STATE_FAILED, "target end %u/%u",
+          target.base.last_state, target.base.failure);
+    CHECK(mr_ssh_session_open_stream(jump.base.session, "127.0.0.1", g_port, &refused) == MR_SSH_ERROR_STOPPED,
+          "a stream from an ended session");
+
+    pthread_join(target_thread, NULL);
+    pthread_join(jump_thread, NULL);
+    CHECK(mr_ssh_session_destroy(target.base.session) == MR_SSH_STATUS_OK, "destroy target");
+    CHECK(mr_ssh_session_destroy(jump.base.session) == MR_SSH_STATUS_OK, "destroy jump");
+    CHECK(mr_ssh_test_libssh2_blocks() == 0, "libssh2 leaked %ld block(s)", mr_ssh_test_libssh2_blocks());
+}
+
+static void test_a_transport_is_closed_by_a_session_never_run(void) {
+    printf("ProxyJump: an unused transport is closed\n");
+    int pair[2];
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "socketpair");
+    channel_harness c;
+    channel_harness_start_over(&c, 0, pair[0]);
+    CHECK(mr_ssh_session_destroy(c.base.session) == MR_SSH_STATUS_OK, "destroy");
+    CHECK(stream_reaches_eof(pair[1], 2), "the transport was left open");
+    close(pair[1]);
+
+    mr_ssh_config config = test_config("127.0.0.1", g_port, 5000);
+    config.use_transport = 1;
+    config.transport_fd = -1;
+    mr_ssh_callbacks callbacks = { .on_state = on_state, .on_host_key = on_host_key,
+                                   .on_auth_request = on_auth_request, .on_output = on_output };
+    mr_ssh_session *session = NULL;
+    CHECK(mr_ssh_session_create(&config, &callbacks, NULL, &session) == MR_SSH_ERROR_INVALID_ARGUMENT,
+          "a negative transport");
+}
+
 static size_t on_output_for_channels_check(void *context, uint32_t id, const uint8_t *bytes, size_t length) {
     (void)context; (void)id; (void)bytes;
     return length;
@@ -1601,6 +1692,8 @@ int main(void) {
     test_shells_share_one_connection();
     test_a_deferred_session_runs_a_command_then_a_shell();
     test_a_refused_command_and_the_channel_limit();
+    test_a_session_runs_over_a_stream_through_a_jump_host();
+    test_a_transport_is_closed_by_a_session_never_run();
 
     if (g_failures) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);
