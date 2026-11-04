@@ -9,14 +9,19 @@ import SSHProtocol
 /// Lets the UI test drive the real screens without a Windows host, a Keychain
 /// entitlement or a file store that would leak between runs.
 ///
-/// It is keyed off a launch argument rather than a build configuration so the
-/// same binary is exercised, and it only ever substitutes the outermost
-/// dependencies - the views and models under test are the shipping ones.
+/// It is keyed off a launch argument so a Debug build is exercised as it
+/// runs, and it only ever substitutes the outermost dependencies - the views
+/// and models under test are the shipping ones. A Release build never turns
+/// it on: what ships reads no stand-in hosts or keys from its launch.
 enum UITestConfiguration {
     static let launchArgument = "-mremote-ui-testing"
 
     static var isActive: Bool {
+        #if DEBUG
         ProcessInfo.processInfo.arguments.contains(launchArgument)
+        #else
+        false
+        #endif
     }
 
     /// Asks for UIKit's own transitions to run without animation. Now and

@@ -1,0 +1,40 @@
+{
+  "sourceLanguage" : "ja",
+  "strings" : {
+    "NSLocalNetworkUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect by Remote Desktop or SSH to the computers you choose on your local network."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ローカルネットワーク上の、指定したコンピューターにリモートデスクトップや SSH で接続します。"
+          }
+        }
+      }
+    },
+    "NSMicrophoneUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send your voice to the remote computer, when you turn on its microphone."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "接続先のマイクをオンにしたとき、あなたの声を接続先のコンピューターに送ります。"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}
