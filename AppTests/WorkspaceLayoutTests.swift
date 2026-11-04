@@ -28,6 +28,8 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(layout(.docked(fraction: 0.5)).desktopInsets.bottom, 0)
         XCTAssertEqual(layout(.hidden).desktopInsets.bottom, 34)
         XCTAssertEqual(layout(.floating).desktopInsets.top, 62)
+        XCTAssertEqual(layout(.atHinge).desktopInsets.bottom, DeckLayout.hingeGap,
+                       "at a hinge the desktop stops short of the crease")
     }
 
     func testOnlyALockedSizeOutlivesTheDeck() {
@@ -41,7 +43,7 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(layout(.hidden, policy: .lockToDeck).renderSizeOverride, shown,
                        "hiding the deck keeps the shape it had")
         XCTAssertEqual(layout(.hidden, policy: .lockToDeck, lockedDeck: .atHinge).renderSizeOverride,
-                       CGSize(width: 402, height: 437 - 62))
+                       CGSize(width: 402, height: 437 - 62 - DeckLayout.hingeGap))
     }
 
     func testAFloatingFrameStaysOnScreenAndUsable() {

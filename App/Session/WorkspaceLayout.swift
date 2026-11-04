@@ -50,6 +50,12 @@ enum DeckLayout: Equatable {
             defaults.removeObject(forKey: key)
         }
     }
+    /// The strip left dark above a foldable's hinge, so the desktop sits up
+    /// on the standing half rather than running into the crease.
+    static let hingeGap: CGFloat = 24
+
+    var hingeClearance: CGFloat { self == .atHinge ? Self.hingeGap : 0 }
+
     /// The strip above a docked deck that is dragged to resize it.
     static let resizeHandleHeight: CGFloat = 20
 
@@ -93,12 +99,14 @@ struct WorkspaceLayout: Equatable {
     var desktopFrameHeight: CGFloat { size.height - deckHeight }
 
     /// The deck's own bottom edge is the deck's, so only the top and the
-    /// sides are given up while it is docked.
+    /// sides are given up while it is docked. At a hinge the desktop also
+    /// stops short of it: the crease bends the picture's bottom rows away
+    /// from the user.
     var desktopInsets: EdgeInsets {
         EdgeInsets(
             top: safeArea.top,
             leading: safeArea.leading,
-            bottom: deckHeight > 0 ? 0 : safeArea.bottom,
+            bottom: deckHeight > 0 ? deck.hingeClearance : safeArea.bottom,
             trailing: safeArea.trailing
         )
     }
@@ -120,7 +128,7 @@ struct WorkspaceLayout: Equatable {
             return CGSize(
                 width: size.width - safeArea.leading - safeArea.trailing,
                 height: size.height - deck.deckHeight(in: size.height) - safeArea.top
-                    - (deck.deckHeight(in: size.height) > 0 ? 0 : safeArea.bottom)
+                    - (deck.deckHeight(in: size.height) > 0 ? deck.hingeClearance : safeArea.bottom)
             )
         }
     }
