@@ -36,7 +36,7 @@ port=$(( 20000 + RANDOM % 20000 ))
 if [[ "$LINUX" == 1 ]]; then
     user=tester
     docker --context "$DOCKER_CONTEXT" build -q -t mremote-ssh-test "$REPO/bridge/ssh/tests/linux-host" >/dev/null
-    container="$(docker --context "$DOCKER_CONTEXT" run -d --rm -p "127.0.0.1:$port:22" \
+    container="$(docker --context "$DOCKER_CONTEXT" run -d --rm --hostname linux -p "127.0.0.1:$port:22" \
         -e "AUTHORIZED_KEY=$(cat "$work/user_ed25519.pub")" mremote-ssh-test)"
 else
     user="$(id -un)"
@@ -72,6 +72,7 @@ TEST_RUNNER_MREMOTE_UITEST_SSH_PORT="$port" \
 TEST_RUNNER_MREMOTE_UITEST_SSH_USER="$user" \
 TEST_RUNNER_MREMOTE_UITEST_SSH_KEY="$(base64 < "$work/user_ed25519" | tr -d "\n")" \
 TEST_RUNNER_MREMOTE_UITEST_SHOTS="${MR_SHOTS:-$work}" \
+TEST_RUNNER_MREMOTE_UITEST_STORE_SHOTS="${MR_STORE_SHOTS:-}" \
 TEST_RUNNER_MREMOTE_UITEST_TMUX_HOST="$([[ "$LINUX" == 1 ]] && echo isolated || echo none)" \
 xcodebuild test -project mRemote.xcodeproj -scheme mRemote \
     -destination "platform=iOS Simulator,name=$DEVICE" \
