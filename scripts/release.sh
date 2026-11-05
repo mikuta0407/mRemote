@@ -141,14 +141,19 @@ cask "mremote" do
         must_succeed:   false
   end
 
-  uninstall quit: "com.mikuta0407.mRemote"
+  uninstall quit: "net.mikuta0407.mRemote"
 
+  # com.mikuta0407.mRemote: the bundle ID before 0.5.1
   zap trash: [
     "~/Library/Application Support/mRemote-profiles.json",
     "~/Library/Caches/com.mikuta0407.mRemote",
+    "~/Library/Caches/net.mikuta0407.mRemote",
     "~/Library/HTTPStorages/com.mikuta0407.mRemote",
+    "~/Library/HTTPStorages/net.mikuta0407.mRemote",
     "~/Library/Preferences/com.mikuta0407.mRemote.plist",
+    "~/Library/Preferences/net.mikuta0407.mRemote.plist",
     "~/Library/Saved Application State/com.mikuta0407.mRemote.savedState",
+    "~/Library/Saved Application State/net.mikuta0407.mRemote.savedState",
   ]
 end
 CASK

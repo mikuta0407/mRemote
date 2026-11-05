@@ -16,7 +16,7 @@ public enum LogCategory: String, Sendable, CaseIterable {
 }
 
 public enum AppLog {
-    public static let subsystem = "com.mikuta0407.mRemote"
+    public static let subsystem = "net.mikuta0407.mRemote"
 
     public static func logger(_ category: LogCategory) -> Logger {
         Logger(subsystem: subsystem, category: category.rawValue)

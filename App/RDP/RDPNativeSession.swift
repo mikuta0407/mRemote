@@ -162,7 +162,7 @@ final class RDPNativeSession: @unchecked Sendable {
     ) {
         self.generation = generation
         worker = DispatchQueue(
-            label: "com.mikuta0407.mRemote.rdp-session.\(generation)",
+            label: "net.mikuta0407.mRemote.rdp-session.\(generation)",
             qos: .userInitiated
         )
         var continuation: AsyncStream<RDPNativeEvent>.Continuation!
@@ -450,7 +450,7 @@ final class RDPNativeCallbackContext: @unchecked Sendable {
     private let calls = RDPNativeCallGate()
     private let continuation: AsyncStream<RDPNativeEvent>.Continuation
     private let trustQueue = DispatchQueue(
-        label: "com.mikuta0407.mRemote.certificate-trust",
+        label: "net.mikuta0407.mRemote.certificate-trust",
         qos: .userInitiated
     )
     private let endpoint: RemoteEndpoint

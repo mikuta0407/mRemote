@@ -4,7 +4,7 @@ import AppleAdapters
 import SSHProtocol
 import SessionCore
 
-let sshLog = Logger(subsystem: "com.mikuta0407.mRemote", category: "ssh")
+let sshLog = Logger(subsystem: "net.mikuta0407.mRemote", category: "ssh")
 
 /// Keystrokes and pastes on their way to the bridge. Retargeted to each
 /// attempt's shell; refuses while it has none.
@@ -381,7 +381,7 @@ actor SSHRemoteSession: TerminalSession {
     /// jump host.
     private func startNative(username: String, transport: Int32?) {
         let first = terminals[0]
-        let session = SSHNativeSession(label: "com.mikuta0407.mRemote.ssh.\(machine.generation.rawValue)")
+        let session = SSHNativeSession(label: "net.mikuta0407.mRemote.ssh.\(machine.generation.rawValue)")
         // Looking for tmux first: no shell until it is known which to open.
         // A jump host opens none at all.
         detectsTmux = role == .terminals && settings.tmux.attach != .off

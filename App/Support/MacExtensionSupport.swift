@@ -17,7 +17,7 @@ final class NetworkConstraint: @unchecked Sendable {
         monitor.pathUpdateHandler = { [weak self] path in
             self?.update(path.isExpensive || path.isConstrained)
         }
-        monitor.start(queue: DispatchQueue(label: "com.mikuta0407.mRemote.network-constraint"))
+        monitor.start(queue: DispatchQueue(label: "net.mikuta0407.mRemote.network-constraint"))
     }
 
     var isConstrained: Bool {
