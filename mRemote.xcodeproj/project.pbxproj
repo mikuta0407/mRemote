@@ -383,7 +383,6 @@
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "config/mRemote-Info.plist";
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect by Remote Desktop or SSH to the computers you choose on your local network.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Send your voice to the remote computer, when you turn on its microphone.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -430,7 +429,6 @@
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "config/mRemote-Info.plist";
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect by Remote Desktop or SSH to the computers you choose on your local network.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Send your voice to the remote computer, when you turn on its microphone.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
