@@ -18,6 +18,20 @@ final class ReconnectScheduleTests: XCTestCase {
         ))
     }
 
+    func testADropSoonAfterReconnectingCountsOnFromTheLastAttempt() {
+        // A server that drops each session as it is set up: not the first
+        // attempt again every time.
+        XCTAssertEqual(schedule.attempt(following: 0, connectedFor: .seconds(600)), 1)
+        XCTAssertEqual(schedule.attempt(following: 1, connectedFor: .milliseconds(200)), 2)
+        XCTAssertEqual(schedule.attempt(following: 2, connectedFor: nil), 3)
+        XCTAssertNil(schedule.delay(
+            beforeAttempt: schedule.attempt(following: 3, connectedFor: .seconds(1)),
+            after: .protocolFailure(detail: "dropped"), policy: .automatic, hadConnected: true
+        ))
+        // One that held is a new drop.
+        XCTAssertEqual(schedule.attempt(following: 3, connectedFor: .seconds(10)), 1)
+    }
+
     func testNothingIsRetriedThatNeedsTheUser() {
         // Retrying a refused password is how an account gets locked out.
         XCTAssertNil(schedule.delay(

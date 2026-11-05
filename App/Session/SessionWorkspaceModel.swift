@@ -42,6 +42,10 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
     /// attempt number out of `reconnectSchedule.maximumAttempts`.
     private(set) var reconnectAttempt: Int?
     private var hadConnected = false
+    /// Automatic attempts since the session last stayed up
+    /// (`ReconnectSchedule.heldAfter`), and since when it has been.
+    private var reconnectAttemptsMade = 0
+    private var connectedSince: ContinuousClock.Instant?
     private(set) var remoteHasText = false
     private(set) var remoteHasImage = false
     private(set) var remoteHasFiles = false
@@ -530,6 +534,7 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
                 lastError = nil
                 hadConnected = true
                 reconnectAttempt = nil
+                connectedSince = .now
                 if let desktop {
                     supportsDynamicResolution = await desktop.supportsDynamicResolution
                 }
@@ -894,7 +899,10 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
     /// attempt for the same drop.
     private func scheduleReconnectIfNeeded() {
         guard reconnectTask == nil, state == .failed else { return }
-        let attempt = (reconnectAttempt ?? 0) + 1
+        let attempt = reconnectSchedule.attempt(
+            following: reconnectAttemptsMade,
+            connectedFor: connectedSince.map { ContinuousClock.now - $0 })
+        connectedSince = nil
         guard let delay = reconnectSchedule.delay(
             beforeAttempt: attempt,
             after: lastError,
@@ -905,6 +913,7 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
             return
         }
         reconnectAttempt = attempt
+        reconnectAttemptsMade = attempt
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self else { return }
@@ -912,7 +921,8 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
             guard self.state == .failed else { return }
             await self.retry()
             // A failed attempt arrives as another `.failed`, which schedules
-            // the next one; a success clears `reconnectAttempt`.
+            // the next one; a success clears `reconnectAttempt`, and one
+            // that holds starts the count again.
             if self.state == .failed { self.scheduleReconnectIfNeeded() }
         }
     }
@@ -921,6 +931,7 @@ final class SessionWorkspaceModel: Identifiable, Hashable {
         reconnectTask?.cancel()
         reconnectTask = nil
         reconnectAttempt = nil
+        reconnectAttemptsMade = 0
     }
 
     // MARK: - Presentation

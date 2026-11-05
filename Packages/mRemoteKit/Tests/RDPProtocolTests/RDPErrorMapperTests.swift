@@ -104,6 +104,14 @@ final class RDPErrorMapperTests: XCTestCase {
         )
     }
 
+    func testAPasswordRefusedOnceTheSessionIsUpIsAnAuthenticationFailure() {
+        // What macos-rdp-server sends, without NLA, when the password it
+        // checks after activation is wrong: never retried automatically.
+        let cause = RDPErrorMapper.classify(status: .backend, nativeCode: errinfo(0x0A))
+        XCTAssertEqual(cause, .failed(.authenticationFailed))
+        XCTAssertEqual(cause.error?.isRetriable, false)
+    }
+
     func testLicensingFailuresAreNotBlamedOnTheCredentials() {
         XCTAssertEqual(
             RDPErrorMapper.classify(status: .backend, nativeCode: errinfo(0x0102)),

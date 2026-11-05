@@ -260,8 +260,13 @@ public enum RDPErrorMapper {
             return .remoteInitiated(.anotherConnection)
         case 0x06:
             return .failed(.resourceUnavailable)
-        case 0x07, 0x09, 0x0A:
+        case 0x07, 0x09:
             return .failed(.accountRestricted)
+        case 0x0A:
+            // ERRINFO_SERVER_FRESH_CREDENTIALS_REQUIRED: the password was
+            // refused once the session was up - a server without NLA, which
+            // checks it only then (macos-rdp-server). Never retried.
+            return .failed(.authenticationFailed)
         case 0x0100...0x010A:
             // Licensing. Not something a retry fixes, and not the user's
             // credentials either.
