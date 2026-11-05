@@ -21,7 +21,7 @@ public enum KeychainStore: Sendable, Hashable {
         #if os(macOS) || targetEnvironment(macCatalyst)
         var probe: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "com.mikuta0407.mRemote.keychain-probe",
+            kSecAttrService as String: "net.mikuta0407.mRemote.keychain-probe",
             kSecAttrAccount as String: "probe",
             kSecAttrSynchronizable as String: false,
             kSecUseDataProtectionKeychain as String: true,

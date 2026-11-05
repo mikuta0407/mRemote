@@ -115,7 +115,7 @@ final class LoginKeychainTests: XCTestCase {
 
     func testCredentialsRoundTripInTheLoginKeychain() throws {
         let repository = KeychainCredentialRepository(
-            service: "com.mikuta0407.mRemote.tests.\(UUID().uuidString)",
+            service: "net.mikuta0407.mRemote.tests.\(UUID().uuidString)",
             store: .login
         )
         let reference = CredentialReference()
@@ -131,7 +131,7 @@ final class LoginKeychainTests: XCTestCase {
 
     func testTrustRoundTripsInTheLoginKeychain() throws {
         let repository = KeychainTrustRepository(
-            service: "com.mikuta0407.mRemote.tests.\(UUID().uuidString)",
+            service: "net.mikuta0407.mRemote.tests.\(UUID().uuidString)",
             store: .login
         )
         defer { try? repository.remove(host: "desk.example", port: 3389) }
@@ -158,7 +158,7 @@ final class LoginKeychainTests: XCTestCase {
 
     func testKnownHostsRoundTripInTheLoginKeychain() throws {
         let repository = KeychainKnownHostRepository(
-            service: "com.mikuta0407.mRemote.tests.\(UUID().uuidString)",
+            service: "net.mikuta0407.mRemote.tests.\(UUID().uuidString)",
             store: .login
         )
         defer { try? repository.remove(host: "shell.example", port: 22) }
@@ -180,7 +180,7 @@ final class LoginKeychainTests: XCTestCase {
 
     func testSSHKeysRoundTripInTheLoginKeychain() throws {
         let repository = KeychainSSHKeyRepository(
-            service: "com.mikuta0407.mRemote.tests.\(UUID().uuidString)",
+            service: "net.mikuta0407.mRemote.tests.\(UUID().uuidString)",
             store: .login
         )
         let metadata = SSHKeyMetadata(

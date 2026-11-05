@@ -30,7 +30,7 @@ public struct KeychainCredentialRepository: CredentialRepository {
     private let store: KeychainStore
 
     public init(
-        service: String = "com.mikuta0407.mRemote.credentials",
+        service: String = "net.mikuta0407.mRemote.credentials",
         accessGroup: String? = nil,
         store: KeychainStore = .dataProtection
     ) {

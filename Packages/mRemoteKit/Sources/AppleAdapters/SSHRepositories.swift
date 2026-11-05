@@ -46,7 +46,7 @@ public struct KeychainKnownHostRepository: KnownHostRepository {
     private let items: KeychainDataStore
 
     public init(
-        service: String = "com.mikuta0407.mRemote.known-hosts",
+        service: String = "net.mikuta0407.mRemote.known-hosts",
         accessGroup: String? = nil,
         store: KeychainStore = .dataProtection
     ) {
@@ -170,7 +170,7 @@ public struct KeychainSSHKeyRepository: SSHKeyRepository {
     private let items: KeychainDataStore
 
     public init(
-        service: String = "com.mikuta0407.mRemote.ssh-keys",
+        service: String = "net.mikuta0407.mRemote.ssh-keys",
         accessGroup: String? = nil,
         store: KeychainStore = .dataProtection
     ) {

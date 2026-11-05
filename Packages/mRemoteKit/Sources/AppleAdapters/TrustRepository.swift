@@ -82,7 +82,7 @@ public struct KeychainTrustRepository: TrustRepository {
     private let store: KeychainStore
 
     public init(
-        service: String = "com.mikuta0407.mRemote.trust",
+        service: String = "net.mikuta0407.mRemote.trust",
         accessGroup: String? = nil,
         store: KeychainStore = .dataProtection
     ) {
