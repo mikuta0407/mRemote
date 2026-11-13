@@ -12,6 +12,7 @@ struct SessionWindowRoot: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var model: SessionWorkspaceModel?
     @State private var isMissing = false
+    @State private var isConfirmingClose = false
 
     var body: some View {
         Group {
@@ -31,6 +32,31 @@ struct SessionWindowRoot: View {
             minimumSize: CGSize(width: 640, height: 400)
         )
         .task { await attach() }
+        // The Mac's close button and ⌘W ask what to do with a live session,
+        // instead of leaving it connected behind the list unnoticed.
+        .macWindowCloseGuard {
+            guard let model, model.state.isActive else { return true }
+            isConfirmingClose = true
+            return false
+        }
+        .alert(
+            String(localized: "\(model?.displayName ?? "") のウィンドウを閉じます"),
+            isPresented: $isConfirmingClose
+        ) {
+            Button("切断して閉じる", role: .destructive) {
+                // The window closes itself once the session has ended.
+                guard let model else { return }
+                Task { await model.disconnect() }
+            }
+            .accessibilityIdentifier("session-close-disconnect")
+            Button("接続を維持して閉じる") {
+                model?.returnToList()
+            }
+            .accessibilityIdentifier("session-close-keep")
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("接続を維持すると、セッションは接続先一覧から再び開けます。")
+        }
         // The window in front is the one that types.
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, let model else { return }
