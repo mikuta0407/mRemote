@@ -4,8 +4,8 @@ import SSHProtocol
 
 /// The keys above the software keyboard (docs/ssh-design.md 8.3), in place
 /// of SwiftTerm's own bar, which fits what the width allows and has no
-/// Home/End/PgUp/PgDn. One row that scrolls sideways; hiding the keyboard
-/// stays pinned at the trailing end.
+/// Home/End/PgUp/PgDn. One row that scrolls sideways; the touch mode and
+/// hiding the keyboard stay pinned at the trailing end.
 ///
 /// Ctrl and Alt are SwiftTerm's sticky modifiers, so they also apply to the
 /// next key typed on the software keyboard, and SwiftTerm clears them.
@@ -17,7 +17,9 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
                                       label: String(localized: "キーボードを閉じる")) { _ = $0.resignFirstResponder() }
     private var controlButton: UIButton?
     private var metaButton: UIButton?
-    private var touchButton: UIButton?
+    /// What a touch on the terminal does (`TerminalTouchMode`): a menu of
+    /// the three, its icon the one in use.
+    private lazy var touchModeButton = makeTouchModeButton()
 
     private var repeatDelay: Timer?
     private var repeatTimer: Timer?
@@ -36,6 +38,8 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
             NotificationCenter.default.addObserver(
                 self, selector: #selector(modifierReset), name: name, object: terminal)
         }
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(touchModeChanged), name: .terminalTouchModeChanged, object: nil)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -83,19 +87,16 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         for n in 1...12 {
             keyButtons.append(key("F\(n)") { $0.pressKey(.function(n)) })
         }
-        let touch = toggle(nil, symbol: "hand.draw", label: String(localized: "タッチで選択")) { terminal in
-            terminal.allowMouseReporting.toggle()
-        }
-        touchButton = touch
-        keyButtons.append(touch)
 
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.alwaysBounceHorizontal = true
         scrollView.contentInsetAdjustmentBehavior = .never
         keyButtons.forEach(scrollView.addSubview)
         addSubview(scrollView)
+        addSubview(touchModeButton)
         addSubview(hideButton)
         refreshModifiers()
+        refreshTouchMode()
     }
 
     /// By hand rather than a stack view in the scroll view: each key as wide
@@ -108,7 +109,10 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         hideButton.frame = CGRect(
             x: bounds.width - safeAreaInsets.right - inset - hideWidth, y: inset,
             width: hideWidth, height: keyHeight)
-        scrollView.frame = CGRect(x: 0, y: 0, width: hideButton.frame.minX - inset, height: bounds.height)
+        touchModeButton.frame = CGRect(
+            x: hideButton.frame.minX - inset - hideWidth, y: inset,
+            width: hideWidth, height: keyHeight)
+        scrollView.frame = CGRect(x: 0, y: 0, width: touchModeButton.frame.minX - inset, height: bounds.height)
         var x = safeAreaInsets.left + inset
         for button in keyButtons {
             let fit = button.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: keyHeight))
@@ -123,7 +127,42 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         guard let terminal else { return }
         controlButton?.isSelected = terminal.controlModifier
         metaButton?.isSelected = terminal.metaModifier
-        touchButton?.isSelected = !terminal.allowMouseReporting
+    }
+
+    // MARK: Touch mode
+
+    @objc private func touchModeChanged() { refreshTouchMode() }
+
+    private func makeTouchModeButton() -> UIButton {
+        let button = button(nil, symbol: TerminalTouchMode.current.symbol,
+                            label: String(localized: "タッチの操作"))
+        button.accessibilityIdentifier = "terminal-key-touch-mode"
+        button.showsMenuAsPrimaryAction = true
+        return button
+    }
+
+    private func refreshTouchMode() {
+        let current = TerminalTouchMode.current
+        touchModeButton.configuration?.image = UIImage(
+            systemName: current.symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 15))
+        touchModeButton.accessibilityValue = current.title
+        let modes: [UIMenuElement] = TerminalTouchMode.allCases.map { mode in
+            UIAction(title: mode.title, image: UIImage(systemName: mode.symbol),
+                     state: mode == current ? .on : .off) { _ in
+                TerminalTouchMode.current = mode
+            }
+        }
+        let speed = TerminalWheelSpeed.current
+        let speeds = UIMenu(title: String(localized: "ホイールの速さ"), subtitle: speed.title,
+                            image: UIImage(systemName: "gauge.with.dots.needle.67percent"),
+                            children: TerminalWheelSpeed.allCases.map { choice in
+            UIAction(title: choice.title, state: choice == speed ? .on : .off) { [weak self] _ in
+                UserDefaults.standard.set(choice.rawValue, forKey: TerminalWheelSpeed.storageKey)
+                self?.refreshTouchMode()
+            }
+        })
+        touchModeButton.menu = UIMenu(title: String(localized: "画面のタッチ"),
+                                      children: modes + (current == .wheel ? [speeds] : []))
     }
 
     // MARK: Keys

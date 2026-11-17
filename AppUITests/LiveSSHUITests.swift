@@ -430,4 +430,64 @@ final class LiveSSHUITests: XCTestCase {
                       "the session comes back\n\(app.debugDescription)")
         shot("7-reconnected")
     }
+
+    /// The iPhone: the keyboard is up as soon as the shell is, and what a
+    /// touch does is chosen from the key bar (TerminalTouchMode). `cat -v`
+    /// after turning on SGR mouse reporting shows what reaches the remote.
+    func testKeyboardAndTouchModesOnThePhone() throws {
+        try launchAndConnect()
+        guard UIDevice.current.userInterfaceIdiom == .phone else {
+            throw XCTSkip("the keyboard comes up by itself on the iPhone only")
+        }
+        // No tap: the key bar is the keyboard's, so it shows the terminal
+        // has it.
+        XCTAssertTrue(element("terminal-key-Esc").waitForExistence(timeout: 5),
+                      "the keyboard is up without a tap\n\(app.debugDescription)")
+        shot("touch-1-keyboard")
+
+        app.typeText("printf '\\033[?1000h\\033[?1006h'; cat -v\n")
+        Thread.sleep(forTimeInterval: 1)
+        let terminal = element("terminal-surface")
+        func choose(_ title: String) {
+            let button = element("terminal-key-touch-mode")
+            XCTAssertTrue(button.waitForExistence(timeout: 5))
+            button.tap()
+            let item = app.buttons[title]
+            XCTAssertTrue(item.waitForExistence(timeout: 5), "\(title) in the menu\n\(app.debugDescription)")
+            item.tap()
+        }
+        func drag(from: CGFloat, to: CGFloat) {
+            terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: from))
+                .press(forDuration: 0.05, thenDragTo: terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: to)))
+        }
+        func count(_ needle: String) -> Int { terminalText().components(separatedBy: needle).count - 1 }
+
+        // Wheel: a drag up turns the wheel down (65), a drag down up (64).
+        choose("マウスホイールでスクロール")
+        drag(from: 0.5, to: 0.15)
+        XCTAssertTrue(waitForTerminal(containing: "[<65;"), "a drag up is the wheel down\n\(terminalText())")
+        drag(from: 0.15, to: 0.5)
+        XCTAssertTrue(waitForTerminal(containing: "[<64;"), "a drag down is the wheel up\n\(terminalText())")
+        shot("touch-2-wheel")
+
+        // Mouse: a tap is a click, pressed and released.
+        choose("マウスクリック")
+        let clicks = count("[<0;")
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.2)).tap()
+        let deadline = Date().addingTimeInterval(5)
+        while count("[<0;") <= clicks, Date() < deadline { Thread.sleep(forTimeInterval: 0.3) }
+        XCTAssertGreaterThan(count("[<0;"), clicks, "a tap is a click\n\(terminalText())")
+
+        // The scrollback: nothing reaches the remote.
+        choose("バッファをスクロール")
+        let sent = count("[<")
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.2)).tap()
+        drag(from: 0.5, to: 0.15)
+        Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertEqual(count("[<"), sent, "no mouse events in scrollback mode\n\(terminalText())")
+        shot("touch-3-scrollback")
+
+        // Left as found, for the other tests.
+        choose("マウスクリック")
+    }
 }

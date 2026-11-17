@@ -241,7 +241,9 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
     private let settings: EffectiveSSHSettings
     /// User input: keys, the key bar, paste. The terminal's own replies to
     /// the remote program's queries are sent regardless.
-    var isInputEnabled = true
+    var isInputEnabled = true {
+        didSet { showInitialKeyboardIfReady() }
+    }
     var clipboardPolicy: ClipboardPolicy = .bidirectional
     var onSendRefused: () -> Void = {}
     var onPasteNeedsConfirmation: (String, @escaping () -> Void) -> Void = { _, proceed in proceed() }
@@ -255,7 +257,9 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
     /// Finds control mode in the output (docs/ssh-design.md 16.5).
     private var controlStream = TmuxControlStream()
     /// Its pane is the one that types.
-    var isFocusedPane = true
+    var isFocusedPane = true {
+        didSet { showInitialKeyboardIfReady() }
+    }
     /// The terminal with the keyboard, if any.
     static weak var keyboardOwner: SessionTerminalView?
 
@@ -301,6 +305,12 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
         channel.output.setReadableHandler { [weak self] in
             DispatchQueue.main.async { self?.drain() }
         }
+        wheelPan.addTarget(self, action: #selector(wheelPanned(_:)))
+        wheelPan.maximumNumberOfTouches = 1
+        addGestureRecognizer(wheelPan)
+        applyTouchMode()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(touchModeChanged), name: .terminalTouchModeChanged, object: nil)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -656,6 +666,114 @@ final class SessionTerminalView: TerminalView, @preconcurrency TerminalViewDeleg
             }
         }
         return became
+    }
+
+    // MARK: Touch mode
+
+    /// What a touch does here (`TerminalTouchMode`), the same in every
+    /// terminal.
+    private(set) var touchMode = TerminalTouchMode.mouse
+    /// A drag as a scroll wheel, in `.wheel` mode.
+    private let wheelPan = UIPanGestureRecognizer()
+    /// Drag distance not yet sent as a wheel step.
+    private var wheelRemainder: CGFloat = 0
+
+    @objc private func touchModeChanged() { applyTouchMode() }
+
+    private func applyTouchMode() {
+        touchMode = TerminalTouchMode.current
+        // SwiftTerm sends taps and drags to a program that asks for the
+        // mouse only while this is on.
+        allowMouseReporting = touchMode != .scrollback
+    }
+
+    /// A drag goes to the remote program as a wheel: it asks for the mouse,
+    /// or runs full-screen (the alternate screen has no scrollback of its own
+    /// to scroll, so ↑/↓ as xterm's alternate scroll does).
+    private var dragIsWheel: Bool {
+        guard touchMode == .wheel, isInputEnabled else { return false }
+        let terminal = getTerminal()
+        return terminal.mouseMode != .off || terminal.isCurrentBufferAlternate
+    }
+
+    override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        if gesture === wheelPan { return dragIsWheel }
+        if gesture === panGestureRecognizer {
+            // The scrollback, unless the drag is a wheel.
+            return !dragIsWheel && super.gestureRecognizerShouldBegin(gesture)
+        }
+        // SwiftTerm's other pan is its mouse drag, once a program asks for
+        // the mouse; while text is selected it is the selection's handles.
+        if gesture is UIPanGestureRecognizer, !selection.active, touchMode != .mouse {
+            return false
+        }
+        return super.gestureRecognizerShouldBegin(gesture)
+    }
+
+    @objc private func wheelPanned(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            wheelRemainder = 0
+        case .changed:
+            let terminal = getTerminal()
+            let rowHeight = bounds.height / CGFloat(max(1, terminal.rows))
+            // A wheel step moves tmux and most programs several lines, as
+            // fast as the user chose; an arrow key, one line per row.
+            let usesMouse = terminal.mouseMode != .off
+            let step = rowHeight * (usesMouse ? TerminalWheelSpeed.current.rowsPerStep : 1)
+            wheelRemainder += gesture.translation(in: self).y
+            gesture.setTranslation(.zero, in: self)
+            while abs(wheelRemainder) >= step {
+                // The finger down pulls the content down: earlier lines, as a
+                // wheel turned up.
+                let up = wheelRemainder > 0
+                wheelRemainder += up ? -step : step
+                if usesMouse {
+                    sendWheel(up: up, at: gesture.location(in: self), rowHeight: rowHeight)
+                } else {
+                    sendKey(up ? .up : .down)
+                }
+            }
+        default:
+            wheelRemainder = 0
+        }
+    }
+
+    private func sendWheel(up: Bool, at point: CGPoint, rowHeight: CGFloat) {
+        let terminal = getTerminal()
+        let columnWidth = bounds.width / CGFloat(max(1, terminal.cols))
+        let column = min(max(0, Int(point.x / columnWidth)), terminal.cols - 1)
+        let row = min(max(0, Int((point.y - contentOffset.y) / rowHeight)), terminal.rows - 1)
+        let flags = terminal.encodeButton(button: up ? 4 : 5, release: false, shift: false, meta: false, control: false)
+        terminal.sendEvent(buttonFlags: flags, x: column, y: row,
+                           pixelX: Int(point.x), pixelY: Int(point.y - contentOffset.y))
+    }
+
+    // MARK: Focus
+
+    /// The first time on screen, the keyboard comes up by itself on the
+    /// iPhone: there is no hardware keyboard to type with, and a shell is
+    /// for typing. Once only, so coming back from the list or another tab
+    /// leaves the keyboard as the user left it. It waits while the terminal
+    /// takes no input (a sign-in prompt, the tmux chooser, the menu).
+    private var hasAppeared = false
+    private var wantsInitialKeyboard = false
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil, !hasAppeared else { return }
+        hasAppeared = true
+        wantsInitialKeyboard = UIDevice.current.userInterfaceIdiom == .phone
+        showInitialKeyboardIfReady()
+    }
+
+    private func showInitialKeyboardIfReady() {
+        guard wantsInitialKeyboard, window != nil, isFocusedPane, isInputEnabled else { return }
+        wantsInitialKeyboard = false
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil, self.isInputEnabled, !self.isFirstResponder else { return }
+            self.becomeFirstResponder()
+        }
     }
 
     /// A touch chooses the pane, whatever the gesture turns out to be.

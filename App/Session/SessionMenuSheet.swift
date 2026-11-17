@@ -16,6 +16,8 @@ struct SessionMenuSheet: View {
     @AppStorage(LaptopDeckArrangement.storageKey)
     private var deckArrangement = LaptopDeckArrangement.keyboardAboveTrackpad
     @AppStorage(TouchPointerMode.storageKey) private var touchMode = TouchPointerMode.direct
+    @AppStorage(TerminalTouchMode.storageKey) private var terminalTouchMode = TerminalTouchMode.mouse
+    @AppStorage(TerminalWheelSpeed.storageKey) private var wheelSpeed = TerminalWheelSpeed.standard
     @AppStorage(LaptopDeckPreference.storageKey) private var deckPreference = LaptopDeckPreference.automatic
 
     private var touchModeHint: String {
@@ -68,43 +70,15 @@ struct SessionMenuSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                // What to do first, as the SSH menu has it: the session's
+                // name and state, then back to the list or disconnect. How
+                // it is connected comes at the end.
                 Section {
                     HStack {
                         Text(model.displayName).font(.headline)
                         Spacer()
                         SessionStateBadge(state: model.state, statusText: model.statusText)
                     }
-                    if let security = model.transportSecurity {
-                        LabeledContent("通信の保護", value: Formatting.transportLabel(security))
-                            .accessibilityIdentifier("session-transport-security")
-                    }
-                    // docs/data-and-security.md section 4: the audit display.
-                    // Strong when the server actually chose legacy security,
-                    // a note when it was only allowed.
-                    if model.isUsingLegacySecurity {
-                        Label(
-                            String(localized: "この接続は古い RDP セキュリティで通信しています。暗号は弱く、サーバーの確認もできません。"),
-                            systemImage: "exclamationmark.shield"
-                        )
-                        .font(.footnote)
-                        .foregroundStyle(.orange)
-                        .accessibilityIdentifier("session-legacy-security")
-                    } else if model.allowsLegacySecurity {
-                        Label(
-                            model.transportSecurity == nil
-                                ? String(localized: "古い RDP セキュリティを許可した接続先です。")
-                                : String(localized: "古い RDP セキュリティを許可した接続先ですが、この接続では使われていません。"),
-                            systemImage: "shield.lefthalf.filled"
-                        )
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .accessibilityIdentifier("session-legacy-security")
-                    }
-                }
-
-                macExtensionsSection
-
-                Section {
                     Button {
                         model.returnToList()
                     } label: {
@@ -444,7 +418,39 @@ struct SessionMenuSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                }
 
+                macExtensionsSection
+
+                if model.transportSecurity != nil || model.isUsingLegacySecurity || model.allowsLegacySecurity {
+                    Section("接続") {
+                        if let security = model.transportSecurity {
+                            LabeledContent("通信の保護", value: Formatting.transportLabel(security))
+                                .accessibilityIdentifier("session-transport-security")
+                        }
+                        // docs/data-and-security.md section 4: the audit display.
+                        // Strong when the server actually chose legacy security,
+                        // a note when it was only allowed.
+                        if model.isUsingLegacySecurity {
+                            Label(
+                                String(localized: "この接続は古い RDP セキュリティで通信しています。暗号は弱く、サーバーの確認もできません。"),
+                                systemImage: "exclamationmark.shield"
+                            )
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("session-legacy-security")
+                        } else if model.allowsLegacySecurity {
+                            Label(
+                                model.transportSecurity == nil
+                                    ? String(localized: "古い RDP セキュリティを許可した接続先です。")
+                                    : String(localized: "古い RDP セキュリティを許可した接続先ですが、この接続では使われていません。"),
+                                systemImage: "shield.lefthalf.filled"
+                            )
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("session-legacy-security")
+                        }
+                    }
                 }
             }
             .navigationTitle("セッション")
@@ -496,6 +502,30 @@ extension SessionMenuSheet {
                 }
                 .disabled(!model.state.acceptsInput || !model.clipboardPolicy.allowsSend)
                 .accessibilityIdentifier("session-terminal-paste")
+            }
+            // The Mac has a real mouse and scroll wheel.
+            if !Platform.isMac {
+                Section {
+                    Picker("画面のタッチ", selection: Binding(
+                        get: { terminalTouchMode },
+                        set: { TerminalTouchMode.current = $0 }
+                    )) {
+                        ForEach(TerminalTouchMode.allCases, id: \.self) { mode in
+                            Label(mode.title, systemImage: mode.symbol).tag(mode)
+                        }
+                    }
+                    .accessibilityIdentifier("session-terminal-touch-mode")
+                    if terminalTouchMode == .wheel {
+                        Picker("ホイールの速さ", selection: $wheelSpeed) {
+                            ForEach(TerminalWheelSpeed.allCases, id: \.self) { speed in
+                                Text(speed.title).tag(speed)
+                            }
+                        }
+                        .accessibilityIdentifier("session-terminal-wheel-speed")
+                    }
+                } footer: {
+                    Text(terminalTouchMode.hint + String(localized: "キーボードの上のバーからも切り替えられます。"))
+                }
             }
             Section("タブとペイン") {
                 TerminalLayoutMenuItems(model: model, before: { dismiss() })
